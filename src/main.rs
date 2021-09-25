@@ -19,14 +19,15 @@
 #![warn(unused, unused_extern_crates, unused_import_braces, unused_qualifications)]
 #![warn(unsafe_code)]
 
+extern crate fuser;
 extern crate env_logger;
 #[macro_use] extern crate failure;
 extern crate getopts;
 #[macro_use] extern crate log;
 extern crate sandboxfs;
-extern crate time;
 
 use failure::{Fallible, ResultExt};
+use fuser::MountOption;
 use getopts::Options;
 use std::env;
 use std::fs::File;
@@ -34,7 +35,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::result::Result;
 use std::sync::{Arc, Mutex};
-use time::Timespec;
+use std::time::Duration;
 
 /// Default value of the `--input` and `--output` flags.
 static DEFAULT_INOUT: &str = "-";
@@ -59,9 +60,9 @@ struct UsageError {
 ///
 /// Returns the collection of options, if any, to be passed to the FUSE mount operation in order to
 /// grant the requested permissions.
-fn parse_allow(s: &str) -> Fallible<&'static [&'static str]> {
+fn parse_allow(s: &str) -> Fallible<Option<MountOption>> {
     match s {
-        "other" => Ok(&["-o", "allow_other"]),
+        "other" => Ok(Some(MountOption::AllowOther)),
         "root" => {
             if cfg!(target_os = "linux") {
                 // "-o allow_root" is broken on Linux because this is not actually a
@@ -75,10 +76,10 @@ fn parse_allow(s: &str) -> Fallible<&'static [&'static str]> {
                 // but applies equally here).
                 Err(format_err!("--allow=root is known to be broken on Linux"))
             } else {
-                Ok(&["-o", "allow_root"])
+                Ok(Some(MountOption::AllowRoot))
             }
         },
-        "self" => Ok(&[]),
+        "self" => Ok(None),
         _ => {
             let message = format!("{} must be one of other, root, or self", s);
             Err(UsageError { message }.into())
@@ -87,7 +88,7 @@ fn parse_allow(s: &str) -> Fallible<&'static [&'static str]> {
 }
 
 /// Parses the value of a flag that takes a duration, which must specify its unit.
-fn parse_duration(s: &str) -> Result<Timespec, UsageError> {
+fn parse_duration(s: &str) -> Result<Duration, UsageError> {
     let (value, unit) = match s.find(|c| !char::is_ascii_digit(&c) && c != '-') {
         Some(pos) => s.split_at(pos),
         None => {
@@ -104,7 +105,7 @@ fn parse_duration(s: &str) -> Result<Timespec, UsageError> {
     }
 
     value.parse::<u32>()
-        .map(|sec| Timespec { sec: i64::from(sec), nsec: 0 })
+        .map(|sec| Duration::from_secs(sec as u64))
         .map_err(|e| UsageError { message: format!("invalid time specification {}: {}", s, e) })
 }
 
@@ -236,12 +237,15 @@ fn safe_main(program: &str, args: &[String]) -> Fallible<()> {
         return Ok(());
     }
 
-    let mut options = vec!("-o", "fsname=sandboxfs");
-    // TODO(jmmv): Support passing in arbitrary FUSE options from the command line, like "-o ro".
+    let mut os_opts = Vec::<MountOption>::new();
+    os_opts.push(MountOption::FSName("sandboxfs".to_owned()));
 
+    // TODO(jmmv): Support passing in arbitrary FUSE options from the command line, like "-o ro".
     if let Some(value) = matches.opt_str("allow") {
-        for arg in parse_allow(&value)? {
-            options.push(arg);
+        for arg in parse_allow(&value) {
+            if let Some(option) = arg {
+                os_opts.push(option);
+            }
         }
     }
 
@@ -306,7 +310,7 @@ fn safe_main(program: &str, args: &[String]) -> Fallible<()> {
     };
 
     sandboxfs::mount(
-        mount_point, &options, &mappings, ttl, node_cache, access_logger,
+        mount_point, os_opts, &mappings, ttl, node_cache, access_logger,
         matches.opt_present("xattrs"),
         input, output, reconfig_threads)
         .with_context(|_| format!("Failed to mount {}", mount_point.display()))?;
@@ -349,7 +353,7 @@ mod tests {
 
     #[test]
     fn test_parse_duration_ok() {
-        assert_eq!(Timespec { sec: 1234, nsec: 0 }, parse_duration("1234s").unwrap());
+        assert_eq!(Duration::from_secs(1234), parse_duration("1234s").unwrap());
     }
 
     #[test]
@@ -375,7 +379,7 @@ mod tests {
         );
         match parse_mappings(&args) {
             Ok(mappings) => assert_eq!(exp_mappings, mappings),
-            Err(e) => panic!(e),
+            Err(e) => assert_eq!(e.to_string(), ""),
         }
     }
 

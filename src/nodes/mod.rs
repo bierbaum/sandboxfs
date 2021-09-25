@@ -15,7 +15,8 @@
 use IdGenerator;
 use errors::KernelError;
 use failure::Fallible;
-use fuse;
+use fuser;
+use fuser::TimeOrNow;
 use nix;
 use nix::errno::Errno;
 use nix::{sys, unistd};
@@ -24,6 +25,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::result::Result;
 use std::sync::Arc;
+use std::time::{Instant, SystemTime};
 
 mod caches;
 pub mod access_loggers;
@@ -48,12 +50,12 @@ pub trait Cache {
     /// Deletes the entry `path` from the cache.
     ///
     /// The `file_type` corresponds to the type of the mapping that points to the given `path`.
-    fn delete(&self, _path: &Path, _file_type: fuse::FileType);
+    fn delete(&self, _path: &Path, _file_type: fuser::FileType);
 
     /// Renames the entry `old_path` to `new_path` in the cache.
     ///
     /// The `file_type` corresponds to the type of the mapping that points to the given `old_path`.
-    fn rename(&self, _old_path: &Path, _new_path: PathBuf, _file_type: fuse::FileType);
+    fn rename(&self, _old_path: &Path, _new_path: PathBuf, _file_type: fuser::FileType);
 }
 
 /// A reference-counted `Cache` that's safe to send across threads.
@@ -64,8 +66,8 @@ pub struct AttrDelta {
     pub mode: Option<sys::stat::Mode>,
     pub uid: Option<unistd::Uid>,
     pub gid: Option<unistd::Gid>,
-    pub atime: Option<sys::time::TimeVal>,
-    pub mtime: Option<sys::time::TimeVal>,
+    pub atime: Option<TimeOrNow>,
+    pub mtime: Option<TimeOrNow>,
     pub size: Option<u64>,
 }
 
@@ -81,7 +83,7 @@ fn try_path<O: Fn(&PathBuf) -> nix::Result<()>>(path: Option<&PathBuf>, op: O) -
 }
 
 /// Helper function for `setattr` to apply only the mode changes.
-fn setattr_mode(attr: &mut fuse::FileAttr, path: Option<&PathBuf>, mode: Option<sys::stat::Mode>)
+fn setattr_mode(attr: &mut fuser::FileAttr, path: Option<&PathBuf>, mode: Option<sys::stat::Mode>)
     -> Result<(), nix::Error> {
     if mode.is_none() {
         return Ok(())
@@ -95,7 +97,7 @@ fn setattr_mode(attr: &mut fuse::FileAttr, path: Option<&PathBuf>, mode: Option<
     }
     let perm = mode.bits() as u16;
 
-    if attr.kind == fuse::FileType::Symlink {
+    if attr.kind == fuser::FileType::Symlink {
         // TODO(jmmv): Should use NoFollowSymlink to support changing the mode of a symlink if
         // requested to do so, but this is not supported on Linux.
         return Err(nix::Error::from_errno(Errno::EOPNOTSUPP));
@@ -110,7 +112,7 @@ fn setattr_mode(attr: &mut fuse::FileAttr, path: Option<&PathBuf>, mode: Option<
 }
 
 /// Helper function for `setattr` to apply only the UID and GID changes.
-fn setattr_owners(attr: &mut fuse::FileAttr, path: Option<&PathBuf>, uid: Option<unistd::Uid>,
+fn setattr_owners(attr: &mut fuser::FileAttr, path: Option<&PathBuf>, uid: Option<unistd::Uid>,
     gid: Option<unistd::Gid>) -> Result<(), nix::Error> {
     if uid.is_none() && gid.is_none() {
         return Ok(())
@@ -126,33 +128,35 @@ fn setattr_owners(attr: &mut fuse::FileAttr, path: Option<&PathBuf>, uid: Option
 }
 
 /// Helper function for `setattr` to apply only the atime and mtime changes.
-fn setattr_times(attr: &mut fuse::FileAttr, path: Option<&PathBuf>,
-    atime: Option<sys::time::TimeVal>, mtime: Option<sys::time::TimeVal>)
+fn setattr_times(attr: &mut fuser::FileAttr, path: Option<&PathBuf>,
+    atime: Option<SystemTime>, mtime: Option<SystemTime>)
     -> Result<(), nix::Error> {
     if atime.is_none() && mtime.is_none() {
         return Ok(());
     }
 
-    let atime = atime.unwrap_or_else(|| conv::timespec_to_timeval(attr.atime));
-    let mtime = mtime.unwrap_or_else(|| conv::timespec_to_timeval(attr.mtime));
+    let atime = atime.unwrap_or_else(|| attr.atime);
+    let mtime = mtime.unwrap_or_else(|| attr.mtime);
     #[allow(clippy::collapsible_if)]
     let result = if cfg!(have_utimensat = "1") {
         try_path(path, |p| sys::stat::utimensat(
             None, p,
-            &conv::timeval_to_nix_timespec(atime), &conv::timeval_to_nix_timespec(mtime),
+            &conv::system_time_to_nix_timespec(atime), &conv::system_time_to_nix_timespec(mtime),
             sys::stat::UtimensatFlags::NoFollowSymlink))
     } else {
-        if attr.kind == fuse::FileType::Symlink {
+        if attr.kind == fuser::FileType::Symlink {
             eprintln!(
                 "utimensat not present; ignoring request to change symlink times for {:?}", path);
             Err(nix::Error::from_errno(Errno::EOPNOTSUPP))
         } else {
-            try_path(path, |p| sys::stat::utimes(p, &atime, &mtime))
+            try_path(path, |p| sys::stat::utimes(p,
+                &conv::system_time_to_timeval(atime),
+                &conv::system_time_to_timeval(mtime)))
         }
     };
     if result.is_ok() {
-        attr.atime = conv::timeval_to_timespec(atime);
-        attr.mtime = conv::timeval_to_timespec(mtime);
+        attr.atime = atime;
+        attr.mtime = mtime;
         if attr.mtime < attr.crtime {
             // BSD semantics say, per the sources of libarchive, that the crtime should be rolled
             // back to an earlier mtime.
@@ -163,7 +167,7 @@ fn setattr_times(attr: &mut fuse::FileAttr, path: Option<&PathBuf>,
 }
 
 /// Helper function for `setattr` to apply only the size changes.
-fn setattr_size(attr: &mut fuse::FileAttr, path: Option<&PathBuf>, size: Option<u64>)
+fn setattr_size(attr: &mut fuser::FileAttr, path: Option<&PathBuf>, size: Option<u64>)
     -> Result<(), nix::Error> {
     if size.is_none() {
         return Ok(());
@@ -188,8 +192,8 @@ fn setattr_size(attr: &mut fuse::FileAttr, path: Option<&PathBuf>, size: Option<
 ///
 /// This tries to apply as many properties as possible in case of errors.  When errors occur,
 /// returns the first that was encountered.
-pub fn setattr(path: Option<&PathBuf>, attr: &fuse::FileAttr, delta: &AttrDelta)
-    -> Result<fuse::FileAttr, nix::Error> {
+pub fn setattr(path: Option<&PathBuf>, attr: &fuser::FileAttr, delta: &AttrDelta)
+    -> Result<fuser::FileAttr, nix::Error> {
     // Compute the potential new ctime for these updates.  We want to avoid picking a ctime that is
     // larger than what the operations below can result in (so as to prevent a future getattr from
     // moving the ctime back) which is tricky because we don't know the time resolution of the
@@ -204,8 +208,8 @@ pub fn setattr(path: Option<&PathBuf>, attr: &fuse::FileAttr, delta: &AttrDelta)
     // TODO(https://github.com/bazelbuild/sandboxfs/issues/43): Revisit this when we track
     // ctimes purely on our own.
     let updated_ctime = {
-        let mut now = time::now().to_timespec();
-        now.nsec = 0;
+        let mut now = SystemTime::now();
+        // now.nsec = 0;
         if attr.ctime > now {
             attr.ctime
         } else {
@@ -219,7 +223,9 @@ pub fn setattr(path: Option<&PathBuf>, attr: &fuse::FileAttr, delta: &AttrDelta)
     let result = Ok(())
         .and(setattr_mode(&mut new_attr, path, delta.mode))
         .and(setattr_owners(&mut new_attr, path, delta.uid, delta.gid))
-        .and(setattr_times(&mut new_attr, path, delta.atime, delta.mtime))
+        .and(setattr_times(&mut new_attr, path,
+            delta.atime.map(|t| conv::time_or_now_to_system_time(t)),
+            delta.mtime.map(|t| conv::time_or_now_to_system_time(t))))
         // Updating the size only makes sense on files, but handling it here is much simpler than
         // doing so on a node type basis.  Plus, who knows, if the kernel asked us to change the
         // size of anything other than a file, maybe we have to obey and try to do it.
@@ -243,7 +249,7 @@ pub trait Handle {
     /// `readdir` call, not the index of the first entry to return.  This difference is subtle but
     /// important, as an offset of zero has to be handled especially.
     ///
-    /// While this takes a `fuse::ReplyDirectory` object as a parameter for efficiency reasons, it
+    /// While this takes a `fuser::ReplyDirectory` object as a parameter for efficiency reasons, it
     /// is the responsibility of the caller to invoke `reply.ok()` and `reply.error()` on the same
     /// reply object.  This is for consistency with the handling of any errors returned by this and
     /// other functions.
@@ -251,7 +257,7 @@ pub trait Handle {
     /// `_ids` and `_cache` are the file system-wide bookkeeping objects needed to instantiate new
     /// nodes, used when readdir discovers an underlying node that was not yet known.
     fn readdir(&self, _ids: &IdGenerator, _cache: &dyn Cache, _access_logger: &dyn AccessLogger,
-        _offset: i64, _reply: &mut fuse::ReplyDirectory) -> NodeResult<()> {
+        _offset: i64, _reply: &mut fuser::ReplyDirectory) -> NodeResult<()> {
         panic!("Not implemented");
     }
 
@@ -298,7 +304,7 @@ pub trait Node {
     /// that, if the type of an underlying path changes, readdir wouldn't notice until the cached
     /// `getattr` data becomes stale; given that this will always be a problem for `Dir`s and
     /// `Symlink`s (on which we don't allow type changes at all), it's OK.
-    fn file_type_cached(&self) -> fuse::FileType;
+    fn file_type_cached(&self) -> fuser::FileType;
 
     /// Marks the node as deleted (though the in-memory representation remains).
     ///
@@ -361,14 +367,14 @@ pub trait Node {
     /// `_ids` and `_cache` are the file system-wide bookkeeping objects needed to instantiate new
     /// nodes, used when create has to instantiate a new node.
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-    fn create(&self, _name: &OsStr, _uid: unistd::Uid, _gid: unistd::Gid, _mode: u32, _flags: u32,
+    fn create(&self, _name: &OsStr, _uid: unistd::Uid, _gid: unistd::Gid, _mode: u32, _flags: i32,
         _ids: &IdGenerator, _cache: &dyn Cache, _access_logger: &dyn AccessLogger)
-        -> NodeResult<(ArcNode, ArcHandle, fuse::FileAttr)> {
+        -> NodeResult<(ArcNode, ArcHandle, fuser::FileAttr)> {
         panic!("Not implemented")
     }
 
     /// Retrieves the node's metadata.
-    fn getattr(&self) -> NodeResult<fuse::FileAttr>;
+    fn getattr(&self) -> NodeResult<fuser::FileAttr>;
 
     /// Gets the value of the `_name` exgtended attribute.
     fn getxattr(&self, _name: &OsStr) -> NodeResult<Option<Vec<u8>>> {
@@ -397,7 +403,7 @@ pub trait Node {
     /// `_ids` and `_cache` are the file system-wide bookkeeping objects needed to instantiate new
     /// nodes, used when lookup discovers an underlying node that was not yet known.
     fn lookup(&self, _name: &OsStr, _ids: &IdGenerator, _cache: &dyn Cache, _access_logger: &dyn AccessLogger)
-        -> NodeResult<(ArcNode, fuse::FileAttr)> {
+        -> NodeResult<(ArcNode, fuser::FileAttr)> {
         panic!("Not implemented");
     }
 
@@ -410,7 +416,7 @@ pub trait Node {
     /// nodes, used when create has to instantiate a new node.
     #[allow(clippy::too_many_arguments)]
     fn mkdir(&self, _name: &OsStr, _uid: unistd::Uid, _gid: unistd::Gid, _mode: u32,
-        _ids: &IdGenerator, _cache: &dyn Cache, _access_logger: &dyn AccessLogger) -> NodeResult<(ArcNode, fuse::FileAttr)> {
+        _ids: &IdGenerator, _cache: &dyn Cache, _access_logger: &dyn AccessLogger) -> NodeResult<(ArcNode, fuser::FileAttr)> {
         panic!("Not implemented")
     }
 
@@ -423,12 +429,12 @@ pub trait Node {
     /// nodes, used when create has to instantiate a new node.
     #[allow(clippy::too_many_arguments)]
     fn mknod(&self, _name: &OsStr, _uid: unistd::Uid, _gid: unistd::Gid, _mode: u32, _rdev: u32,
-        _ids: &IdGenerator, _cache: &dyn Cache, _access_logger: &dyn AccessLogger) -> NodeResult<(ArcNode, fuse::FileAttr)> {
+        _ids: &IdGenerator, _cache: &dyn Cache, _access_logger: &dyn AccessLogger) -> NodeResult<(ArcNode, fuser::FileAttr)> {
         panic!("Not implemented")
     }
 
     /// Opens the file and returns an open file handle for it.
-    fn open(&self, _flags: u32) -> NodeResult<ArcHandle> {
+    fn open(&self, _flags: i32) -> NodeResult<ArcHandle> {
         panic!("Not implemented");
     }
 
@@ -498,7 +504,7 @@ pub trait Node {
     }
 
     /// Sets one or more properties of the node's metadata.
-    fn setattr(&self, _delta: &AttrDelta) -> NodeResult<fuse::FileAttr>;
+    fn setattr(&self, _delta: &AttrDelta) -> NodeResult<fuser::FileAttr>;
 
     /// Sets the `_name` extended attribute to `_value`.
     fn setxattr(&self, _name: &OsStr, _value: &[u8]) -> NodeResult<()> {
@@ -513,7 +519,7 @@ pub trait Node {
     /// `_ids` and `_cache` are the file system-wide bookkeeping objects needed to instantiate new
     /// nodes, used when create has to instantiate a new node.
     fn symlink(&self, _name: &OsStr, _link: &Path, _uid: unistd::Uid, _gid: unistd::Gid,
-        _ids: &IdGenerator, _cache: &dyn Cache, _access_logger: &dyn AccessLogger) -> NodeResult<(ArcNode, fuse::FileAttr)> {
+        _ids: &IdGenerator, _cache: &dyn Cache, _access_logger: &dyn AccessLogger) -> NodeResult<(ArcNode, fuser::FileAttr)> {
         panic!("Not implemented")
     }
 

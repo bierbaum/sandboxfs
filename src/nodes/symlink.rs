@@ -12,7 +12,7 @@
 // License for the specific language governing permissions and limitations
 // under the License.
 
-extern crate fuse;
+extern crate fuser;
 
 use failure::Fallible;
 use nix::errno;
@@ -32,7 +32,7 @@ pub struct Symlink {
 /// Holds the mutable data of a symlink node.
 struct MutableSymlink {
     underlying_path: Option<PathBuf>,
-    attr: fuse::FileAttr,
+    attr: fuser::FileAttr,
 }
 
 impl Symlink {
@@ -61,7 +61,7 @@ impl Symlink {
     }
 
     /// Same as `getattr` but with the node already locked.
-    fn getattr_locked(inode: u64, state: &mut MutableSymlink) -> NodeResult<fuse::FileAttr> {
+    fn getattr_locked(inode: u64, state: &mut MutableSymlink) -> NodeResult<fuser::FileAttr> {
         if let Some(path) = &state.underlying_path {
             let fs_attr = fs::symlink_metadata(path)?;
             if !fs_attr.file_type().is_symlink() {
@@ -85,8 +85,8 @@ impl Node for Symlink {
         self.writable
     }
 
-    fn file_type_cached(&self) -> fuse::FileType {
-        fuse::FileType::Symlink
+    fn file_type_cached(&self) -> fuser::FileType {
+        fuser::FileType::Symlink
     }
 
     fn delete(&self, cache: &dyn Cache, access_logger: &dyn AccessLogger) {
@@ -114,7 +114,7 @@ impl Node for Symlink {
         Ok(())
     }
 
-    fn getattr(&self) -> NodeResult<fuse::FileAttr> {
+    fn getattr(&self) -> NodeResult<fuser::FileAttr> {
         let mut state = self.state.lock().unwrap();
         Symlink::getattr_locked(self.inode, &mut state)
     }
@@ -154,7 +154,7 @@ impl Node for Symlink {
         Ok(())
     }
 
-    fn setattr(&self, delta: &AttrDelta) -> NodeResult<fuse::FileAttr> {
+    fn setattr(&self, delta: &AttrDelta) -> NodeResult<fuser::FileAttr> {
         let mut state = self.state.lock().unwrap();
         state.attr = setattr(state.underlying_path.as_ref(), &state.attr, delta)?;
         Ok(state.attr)

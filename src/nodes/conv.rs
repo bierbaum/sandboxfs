@@ -12,15 +12,15 @@
 // License for the specific language governing permissions and limitations
 // under the License.
 
-use fuse;
+use fuser::TimeOrNow;
 use nix::{errno, fcntl, sys};
-use nix::sys::time::TimeValLike;
+use nix::sys::time::{TimeVal, TimeValLike};
 use nodes::{KernelError, NodeResult};
 use std::fs;
 use std::io;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use time::Timespec;
 
 /// Fixed point in time to use when we fail to interpret file system supplied timestamps.
@@ -50,6 +50,16 @@ fn system_time_to_timespec(path: &Path, name: &str, time: &io::Result<SystemTime
             BAD_TIME
         },
     }
+}
+
+/// Converts a `time::Timespec` object into a `std::time::SystemTime`.
+pub fn timespec_to_system_time(spec: Timespec) -> SystemTime {
+    let mut time = SystemTime::UNIX_EPOCH;
+
+    SystemTime::UNIX_EPOCH.checked_add(
+        Duration::from_secs(spec.sec as u64)
+            .checked_add(Duration::from_nanos(spec.nsec as u64))
+            .expect("Time overflow")).expect("Time overflow")
 }
 
 /// Converts a `time::Timespec` object into a `sys::time::TimeVal`.
@@ -83,6 +93,31 @@ pub fn timeval_to_nix_timespec(val: sys::time::TimeVal) -> sys::time::TimeSpec {
     sys::time::TimeSpec::nanoseconds((val.tv_sec() as i64) * 1_000_000_000 + usec)
 }
 
+/// Converts a `std::time::SystemTime` object into a `sys::time::TimeSpec`.
+pub fn system_time_to_nix_timespec(val: std::time::SystemTime) -> sys::time::TimeSpec {
+    // TODO(wilhelm): Check this
+    let since_epoch = val.duration_since(SystemTime::UNIX_EPOCH).unwrap();
+    sys::time::TimeSpec::nanoseconds(since_epoch.as_secs() as i64 * 1_000_000_000 +
+        since_epoch.subsec_nanos() as i64)
+}
+
+/// Converts a `std::time::SystemTime` object into a `sys::time::TimeVal`.
+pub fn system_time_to_timeval(val: std::time::SystemTime) -> sys::time::TimeVal {
+    // TODO(wilhelm): Check this
+    let since_epoch = val.duration_since(SystemTime::UNIX_EPOCH).unwrap();
+    sys::time::TimeVal::nanoseconds(since_epoch.as_secs() as i64 * 1_000_000_000 +
+        since_epoch.subsec_nanos() as i64)
+
+}
+
+// Converts a `fuser::TimeNow` to `std::time::SystemTime`.
+pub fn time_or_now_to_system_time(val: TimeOrNow) -> SystemTime {
+    match val {
+        TimeOrNow::SpecificTime(system_time) => system_time,
+        TimeOrNow::Now => SystemTime::now(),
+    }
+}
+
 /// Converts a file type as returned by the file system to a FUSE file type.
 ///
 /// `path` is the file from which the file type was originally extracted and is only for debugging
@@ -91,24 +126,24 @@ pub fn timeval_to_nix_timespec(val: sys::time::TimeVal) -> sys::time::TimeSpec {
 /// If the given file type cannot be mapped to a FUSE file type (because we don't know about that
 /// type or, most likely, because the file type is bogus), logs a warning and returns a regular
 /// file type with the assumption that most operations should work on it.
-pub fn filetype_fs_to_fuse(path: &Path, fs_type: fs::FileType) -> fuse::FileType {
+pub fn filetype_fs_to_fuse(path: &Path, fs_type: fs::FileType) -> fuser::FileType {
     if fs_type.is_block_device() {
-        fuse::FileType::BlockDevice
+        fuser::FileType::BlockDevice
     } else if fs_type.is_char_device() {
-        fuse::FileType::CharDevice
+        fuser::FileType::CharDevice
     } else if fs_type.is_dir() {
-        fuse::FileType::Directory
+        fuser::FileType::Directory
     } else if fs_type.is_fifo() {
-        fuse::FileType::NamedPipe
+        fuser::FileType::NamedPipe
     } else if fs_type.is_file() {
-        fuse::FileType::RegularFile
+        fuser::FileType::RegularFile
     } else if fs_type.is_socket() {
-        fuse::FileType::Socket
+        fuser::FileType::Socket
     } else if fs_type.is_symlink() {
-        fuse::FileType::Symlink
+        fuser::FileType::Symlink
     } else {
         warn!("File system returned invalid file type {:?} for {:?}", fs_type, path);
-        fuse::FileType::RegularFile
+        fuser::FileType::RegularFile
     }
 }
 
@@ -122,7 +157,7 @@ pub fn filetype_fs_to_fuse(path: &Path, fs_type: fs::FileType) -> fuse::FileType
 ///
 /// Any errors encountered along the conversion process are logged and the corresponding field is
 /// replaced by a reasonable value that should work.  In other words: all errors are swallowed.
-pub fn attr_fs_to_fuse(path: &Path, inode: u64, nlink: u32, attr: &fs::Metadata) -> fuse::FileAttr {
+pub fn attr_fs_to_fuse(path: &Path, inode: u64, nlink: u32, attr: &fs::Metadata) -> fuser::FileAttr {
     let len = if attr.is_dir() {
         2  // TODO(jmmv): Reevaluate what directory sizes should be.
     } else {
@@ -135,6 +170,7 @@ pub fn attr_fs_to_fuse(path: &Path, inode: u64, nlink: u32, attr: &fs::Metadata)
     // fine, but other operations are purely in-memory.  To properly handle those cases, we should
     // have our own ctime handling.
     let ctime = Timespec { sec: attr.ctime(), nsec: attr.ctime_nsec() as i32 };
+    let ctime = timespec_to_system_time(ctime);
 
     let perm = match attr.permissions().mode() {
         // TODO(https://github.com/rust-lang/rust/issues/51577): Drop :: prefix.
@@ -156,16 +192,19 @@ pub fn attr_fs_to_fuse(path: &Path, inode: u64, nlink: u32, attr: &fs::Metadata)
         rdev => rdev as u32,
     };
 
-    fuse::FileAttr {
+    // TODO(bierbaum): Figure out something better to do when atime, mtime, or crtime have
+    // no value.
+    fuser::FileAttr {
         ino: inode,
         kind: filetype_fs_to_fuse(path, attr.file_type()),
         nlink: nlink,
         size: len,
         blocks: 0, // TODO(jmmv): Reevaluate what blocks should be.
-        atime: system_time_to_timespec(path, "atime", &attr.accessed()),
-        mtime: system_time_to_timespec(path, "mtime", &attr.modified()),
+        blksize: 0,
+        atime: attr.accessed().unwrap_or(SystemTime::UNIX_EPOCH),
+        mtime: attr.modified().unwrap_or(SystemTime::UNIX_EPOCH),
         ctime: ctime,
-        crtime: system_time_to_timespec(path, "crtime", &attr.created()),
+        crtime: attr.created().unwrap_or(SystemTime::UNIX_EPOCH),
         perm: perm,
         uid: attr.uid(),
         gid: attr.gid(),
@@ -178,8 +217,7 @@ pub fn attr_fs_to_fuse(path: &Path, inode: u64, nlink: u32, attr: &fs::Metadata)
 ///
 /// `allow_writes` indicates whether the file to be opened supports writes or not.  If the flags
 /// don't match this condition, then this returns an error.
-pub fn flags_to_openoptions(flags: u32, allow_writes: bool) -> NodeResult<fs::OpenOptions> {
-    let flags = flags as i32;
+pub fn flags_to_openoptions(flags: i32, allow_writes: bool) -> NodeResult<fs::OpenOptions> {
     let oflag = fcntl::OFlag::from_bits_truncate(flags);
 
     let mut options = fs::OpenOptions::new();
@@ -200,7 +238,7 @@ pub fn flags_to_openoptions(flags: u32, allow_writes: bool) -> NodeResult<fs::Op
 /// Asserts that two FUSE file attributes are equal.
 //
 // TODO(jmmv): Remove once rust-fuse 0.4 is released as it will derive Eq for FileAttr.
-pub fn fileattrs_eq(attr1: &fuse::FileAttr, attr2: &fuse::FileAttr) -> bool {
+pub fn fileattrs_eq(attr1: &fuser::FileAttr, attr2: &fuser::FileAttr) -> bool {
     attr1.ino == attr2.ino
         && attr1.kind == attr2.kind
         && attr1.nlink == attr2.nlink
@@ -306,16 +344,21 @@ mod tests {
         sys::stat::utimes(&path, &sys::time::TimeVal::seconds(12345),
             &sys::time::TimeVal::seconds(678)).unwrap();
 
-        let exp_attr = fuse::FileAttr {
+        let atime = SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(12345)).unwrap();
+        let mtime = SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(678)).unwrap();
+        let bad_time = SystemTime::UNIX_EPOCH;
+
+        let exp_attr = fuser::FileAttr {
             ino: 1234,  // Ensure underlying inode is not propagated.
-            kind: fuse::FileType::Directory,
+            kind: fuser::FileType::Directory,
             nlink: 56, // TODO(jmmv): Should this account for subdirs?
             size: 2,
             blocks: 0,
-            atime: Timespec { sec: 12345, nsec: 0 },
-            mtime: Timespec { sec: 678, nsec: 0 },
-            ctime: BAD_TIME,
-            crtime: BAD_TIME,
+            blksize: 0,
+            atime: atime,
+            mtime: mtime,
+            ctime: bad_time,
+            crtime: bad_time,
             perm: 0o750,
             uid: unistd::getuid().as_raw(),
             gid: unistd::getgid().as_raw(),
@@ -326,8 +369,8 @@ mod tests {
         let mut attr = attr_fs_to_fuse(&path, 1234, 56, &fs::symlink_metadata(&path).unwrap());
         // We cannot really make any useful assertions on ctime and crtime as these cannot be
         // modified and may not be queryable, so stub them out.
-        attr.ctime = BAD_TIME;
-        attr.crtime = BAD_TIME;
+        attr.ctime = bad_time;
+        attr.crtime = bad_time;
         assert!(fileattrs_eq(&exp_attr, &attr));
     }
 
@@ -343,16 +386,21 @@ mod tests {
         sys::stat::utimes(&path, &sys::time::TimeVal::seconds(54321),
             &sys::time::TimeVal::seconds(876)).unwrap();
 
-        let exp_attr = fuse::FileAttr {
+        let atime = SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(54321)).unwrap();
+        let mtime = SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(876)).unwrap();
+        let bad_time = SystemTime::UNIX_EPOCH;
+
+        let exp_attr = fuser::FileAttr {
             ino: 42,  // Ensure underlying inode is not propagated.
-            kind: fuse::FileType::RegularFile,
+            kind: fuser::FileType::RegularFile,
             nlink: 50,
             size: content.len() as u64,
             blocks: 0,
-            atime: Timespec { sec: 54321, nsec: 0 },
-            mtime: Timespec { sec: 876, nsec: 0 },
-            ctime: BAD_TIME,
-            crtime: BAD_TIME,
+            blksize: 0,
+            atime: atime,
+            mtime: mtime,
+            ctime: bad_time,
+            crtime: bad_time,
             perm: 0o640,
             uid: unistd::getuid().as_raw(),
             gid: unistd::getgid().as_raw(),
@@ -363,8 +411,8 @@ mod tests {
         let mut attr = attr_fs_to_fuse(&path, 42, 50, &fs::symlink_metadata(&path).unwrap());
         // We cannot really make any useful assertions on ctime and crtime as these cannot be
         // modified and may not be queryable, so stub them out.
-        attr.ctime = BAD_TIME;
-        attr.crtime = BAD_TIME;
+        attr.ctime = bad_time;
+        attr.crtime = bad_time;
         assert!(fileattrs_eq(&exp_attr, &attr));
     }
 
@@ -374,7 +422,7 @@ mod tests {
         let path = dir.path().join("file");
         create_file(&path, "original content");
 
-        let flags = fcntl::OFlag::O_RDONLY.bits() as u32;
+        let flags = fcntl::OFlag::O_RDONLY.bits();
         let openoptions = flags_to_openoptions(flags, false).unwrap();
         let mut file = openoptions.open(&path).unwrap();
 
@@ -391,7 +439,7 @@ mod tests {
         let path = dir.path().join("file");
         create_file(&path, "");
 
-        let flags = fcntl::OFlag::O_WRONLY.bits() as u32;
+        let flags = fcntl::OFlag::O_WRONLY.bits();
         flags_to_openoptions(flags, false).expect_err("Writability permission not respected");
         let openoptions = flags_to_openoptions(flags, true).unwrap();
         let mut file = openoptions.open(&path).unwrap();
@@ -408,7 +456,7 @@ mod tests {
         let path = dir.path().join("file");
         create_file(&path, "some content");
 
-        let flags = fcntl::OFlag::O_RDWR.bits() as u32;
+        let flags = fcntl::OFlag::O_RDWR.bits();
         flags_to_openoptions(flags, false).expect_err("Writability permission not respected");
         let openoptions = flags_to_openoptions(flags, true).unwrap();
         let mut file = openoptions.open(&path).unwrap();
@@ -427,12 +475,12 @@ mod tests {
         unix::fs::symlink("file", &path).unwrap();
 
         {
-            let flags = fcntl::OFlag::O_RDONLY.bits() as u32;
+            let flags = fcntl::OFlag::O_RDONLY.bits();
             let openoptions = flags_to_openoptions(flags, true).unwrap();
             openoptions.open(&path).expect("Failed to open symlink target; test setup bogus");
         }
 
-        let flags = (fcntl::OFlag::O_RDONLY | fcntl::OFlag::O_NOFOLLOW).bits() as u32;
+        let flags = (fcntl::OFlag::O_RDONLY | fcntl::OFlag::O_NOFOLLOW).bits();
         let openoptions = flags_to_openoptions(flags, true).unwrap();
         openoptions.open(&path).expect_err("Open of symlink succeeded");
     }

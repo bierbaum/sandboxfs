@@ -147,9 +147,10 @@ mod tests {
 
         let count = Arc::from(Mutex::new(CountingAccessLogger::default()));
         let dedup =
-        Arc::new(Mutex::new(DeduplicatingAccessLogger::new(count)));
+        Arc::new(Mutex::new(DeduplicatingAccessLogger::new(count.clone())));
 
-        let read_count = || -> usize { count.lock().unwrap().count() };
+        let cloned_count = count.clone();
+        let read_count = || -> usize { cloned_count.lock().unwrap().count() };
         assert_eq!(read_count(), 0);
         dedup.lock().unwrap().record_directory_access(metadata.ino(), dir.path(), &metadata);
         assert_eq!(read_count(), 1);
