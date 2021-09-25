@@ -29,10 +29,11 @@ extern crate time;
 use failure::{Fallible, ResultExt};
 use getopts::Options;
 use std::env;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::result::Result;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use time::Timespec;
 
 /// Default value of the `--input` and `--output` flags.
@@ -221,6 +222,8 @@ fn safe_main(program: &str, args: &[String]) -> Fallible<()> {
         &format!("TIME{}", SECONDS_SUFFIX));
     opts.optflag("", "version", "prints version information and exits");
     opts.optflag("", "xattrs", "enables support for extended attributes");
+    opts.optopt("", "log_directory_access", "logs access to underlying directories to the given path",
+        "PATH");
     let matches = opts.parse(args)?;
 
     if matches.opt_present("help") {
@@ -293,8 +296,18 @@ fn safe_main(program: &str, args: &[String]) -> Fallible<()> {
     if let Some(path) = matches.opt_str("cpu_profile") {
         _profiler = sandboxfs::ScopedProfiler::start(&path).context("Failed to start CPU profile")?;
     };
+
+    let access_logger: sandboxfs::ArcAccessLogger = if let Some(path) = matches.opt_str("log_directory_access") {
+        let log_file = File::create(path).expect("Failed to create access log file");
+        let file_logger = sandboxfs::LogFileAccessLogger::new(log_file);
+        Arc::from(sandboxfs::DeduplicatingAccessLogger::new(Arc::from(Mutex::new(file_logger))))
+    } else {
+        Arc::from(sandboxfs::NoAccessLogger::default())
+    };
+
     sandboxfs::mount(
-        mount_point, &options, &mappings, ttl, node_cache, matches.opt_present("xattrs"),
+        mount_point, &options, &mappings, ttl, node_cache, access_logger,
+        matches.opt_present("xattrs"),
         input, output, reconfig_threads)
         .with_context(|_| format!("Failed to mount {}", mount_point.display()))?;
     Ok(())

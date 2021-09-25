@@ -26,6 +26,7 @@ use std::result::Result;
 use std::sync::Arc;
 
 mod caches;
+pub mod access_loggers;
 pub use self::caches::{NoCache, PathCache};
 pub mod conv;
 mod dir;
@@ -249,8 +250,8 @@ pub trait Handle {
     ///
     /// `_ids` and `_cache` are the file system-wide bookkeeping objects needed to instantiate new
     /// nodes, used when readdir discovers an underlying node that was not yet known.
-    fn readdir(&self, _ids: &IdGenerator, _cache: &dyn Cache, _offset: i64,
-        _reply: &mut fuse::ReplyDirectory) -> NodeResult<()> {
+    fn readdir(&self, _ids: &IdGenerator, _cache: &dyn Cache, _access_logger: &dyn AccessLogger,
+        _offset: i64, _reply: &mut fuse::ReplyDirectory) -> NodeResult<()> {
         panic!("Not implemented");
     }
 
@@ -305,12 +306,12 @@ pub trait Node {
     /// is called.
     ///
     /// `_cache` is updated to remove the path if the underlying file is deleted.
-    fn delete(&self, _cache: &dyn Cache);
+    fn delete(&self, _cache: &dyn Cache, _access_logger: &dyn AccessLogger);
 
     /// Updates the node's underlying path to the given one.  Needed for renames.
     ///
     /// `_cache` is updated to reflect the rename of the underlying path.
-    fn set_underlying_path(&self, _path: &Path, _cache: &dyn Cache);
+    fn set_underlying_path(&self, _path: &Path, _cache: &dyn Cache, _access_logger: &dyn AccessLogger);
 
     /// Returns the subdirectory `_name` and creates it as a scaffold directory if missing.
     ///
@@ -331,7 +332,7 @@ pub trait Node {
     /// `_ids` and `_cache` are the file system-wide bookkeeping objects needed to instantiate new
     /// nodes, used when this algorithm instantiates any new node.
     fn map(&self, _components: &[Component], _underlying_path: &Path, _writable: bool,
-        _ids: &IdGenerator, _cache: &dyn Cache) -> Fallible<ArcNode> {
+        _ids: &IdGenerator, _cache: &dyn Cache, _access_logger: &dyn AccessLogger) -> Fallible<ArcNode> {
         panic!("Not implemented")
     }
 
@@ -361,7 +362,7 @@ pub trait Node {
     /// nodes, used when create has to instantiate a new node.
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn create(&self, _name: &OsStr, _uid: unistd::Uid, _gid: unistd::Gid, _mode: u32, _flags: u32,
-        _ids: &IdGenerator, _cache: &dyn Cache)
+        _ids: &IdGenerator, _cache: &dyn Cache, _access_logger: &dyn AccessLogger)
         -> NodeResult<(ArcNode, ArcHandle, fuse::FileAttr)> {
         panic!("Not implemented")
     }
@@ -395,7 +396,7 @@ pub trait Node {
     ///
     /// `_ids` and `_cache` are the file system-wide bookkeeping objects needed to instantiate new
     /// nodes, used when lookup discovers an underlying node that was not yet known.
-    fn lookup(&self, _name: &OsStr, _ids: &IdGenerator, _cache: &dyn Cache)
+    fn lookup(&self, _name: &OsStr, _ids: &IdGenerator, _cache: &dyn Cache, _access_logger: &dyn AccessLogger)
         -> NodeResult<(ArcNode, fuse::FileAttr)> {
         panic!("Not implemented");
     }
@@ -409,7 +410,7 @@ pub trait Node {
     /// nodes, used when create has to instantiate a new node.
     #[allow(clippy::too_many_arguments)]
     fn mkdir(&self, _name: &OsStr, _uid: unistd::Uid, _gid: unistd::Gid, _mode: u32,
-        _ids: &IdGenerator, _cache: &dyn Cache) -> NodeResult<(ArcNode, fuse::FileAttr)> {
+        _ids: &IdGenerator, _cache: &dyn Cache, _access_logger: &dyn AccessLogger) -> NodeResult<(ArcNode, fuse::FileAttr)> {
         panic!("Not implemented")
     }
 
@@ -422,7 +423,7 @@ pub trait Node {
     /// nodes, used when create has to instantiate a new node.
     #[allow(clippy::too_many_arguments)]
     fn mknod(&self, _name: &OsStr, _uid: unistd::Uid, _gid: unistd::Gid, _mode: u32, _rdev: u32,
-        _ids: &IdGenerator, _cache: &dyn Cache) -> NodeResult<(ArcNode, fuse::FileAttr)> {
+        _ids: &IdGenerator, _cache: &dyn Cache, _access_logger: &dyn AccessLogger) -> NodeResult<(ArcNode, fuse::FileAttr)> {
         panic!("Not implemented")
     }
 
@@ -448,7 +449,7 @@ pub trait Node {
     ///
     /// `_cache` is the file system-wide bookkeeping object that caches underlying paths to nodes,
     /// which needs to be update to account for the node rename.
-    fn rename(&self, _name: &OsStr, _new_name: &OsStr, _cache: &dyn Cache) -> NodeResult<()> {
+    fn rename(&self, _name: &OsStr, _new_name: &OsStr, _cache: &dyn Cache, _access_logger: &dyn AccessLogger) -> NodeResult<()> {
         panic!("Not implemented");
     }
 
@@ -465,7 +466,7 @@ pub trait Node {
     /// `_cache` is the file system-wide bookkeeping object that caches underlying paths to nodes,
     /// which needs to be update to account for the node rename.
     fn rename_and_move_source(&self, _old_name: &OsStr, _new_dir: ArcNode, _new_name: &OsStr,
-        _cache: &dyn Cache) -> NodeResult<()> {
+        _cache: &dyn Cache, _access_logger: &dyn AccessLogger) -> NodeResult<()> {
         panic!("Not implemented");
     }
 
@@ -484,7 +485,7 @@ pub trait Node {
     /// `_cache` is the file system-wide bookkeeping object that caches underlying paths to nodes,
     /// which needs to be update to account for the node rename.
     fn rename_and_move_target(&self, _dirent: &dir::Dirent, _old_path: &Path, _new_name: &OsStr,
-        _cache: &dyn Cache) -> NodeResult<()> {
+        _cache: &dyn Cache, _access_logger: &dyn AccessLogger) -> NodeResult<()> {
         Err(KernelError::from_errno(Errno::ENOTDIR))
     }
 
@@ -492,7 +493,7 @@ pub trait Node {
     ///
     /// `_cache` is the file system-wide bookkeeping object that caches underlying paths to nodes,
     /// which needs to be update to account for the node removal.
-    fn rmdir(&self, _name: &OsStr, _cache: &dyn Cache) -> NodeResult<()> {
+    fn rmdir(&self, _name: &OsStr, _cache: &dyn Cache, _access_logger: &dyn AccessLogger) -> NodeResult<()> {
         panic!("Not implemented");
     }
 
@@ -512,7 +513,7 @@ pub trait Node {
     /// `_ids` and `_cache` are the file system-wide bookkeeping objects needed to instantiate new
     /// nodes, used when create has to instantiate a new node.
     fn symlink(&self, _name: &OsStr, _link: &Path, _uid: unistd::Uid, _gid: unistd::Gid,
-        _ids: &IdGenerator, _cache: &dyn Cache) -> NodeResult<(ArcNode, fuse::FileAttr)> {
+        _ids: &IdGenerator, _cache: &dyn Cache, _access_logger: &dyn AccessLogger) -> NodeResult<(ArcNode, fuse::FileAttr)> {
         panic!("Not implemented")
     }
 
@@ -520,10 +521,19 @@ pub trait Node {
     ///
     /// `_cache` is the file system-wide bookkeeping object that caches underlying paths to nodes,
     /// which needs to be update to account for the node removal.
-    fn unlink(&self, _name: &OsStr, _cache: &dyn Cache) -> NodeResult<()> {
+    fn unlink(&self, _name: &OsStr, _cache: &dyn Cache, _access_logger: &dyn AccessLogger) -> NodeResult<()> {
         panic!("Not implemented");
     }
 }
 
 /// A reference-counted `Node` that's safe to send across threads.
 pub type ArcNode = Arc<dyn Node + Send + Sync>;
+
+/// Records which underlying paths were accessed.
+pub trait AccessLogger {
+    /// Records that a directory was used.
+    fn record_directory_access(&self, _ino: u64, _underlying_path: &Path, _attr: &fs::Metadata);
+}
+
+/// A reference-counted `AccessLogger` that's safe to send across threads.
+pub type ArcAccessLogger = Arc<dyn AccessLogger + Send + Sync>;

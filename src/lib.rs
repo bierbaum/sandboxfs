@@ -67,6 +67,8 @@ pub use errors::{flatten_causes, KernelError, MappingError};
 pub use nodes::{ArcCache, NoCache, PathCache};
 pub use profiling::ScopedProfiler;
 pub use reconfig::{open_input, open_output};
+pub use nodes::ArcAccessLogger;
+pub use nodes::access_loggers::{DeduplicatingAccessLogger, LogFileAccessLogger, NoAccessLogger};
 
 /// Mapping describes how an individual path within the sandbox is connected to an external path
 /// in the underlying file system.
@@ -165,6 +167,9 @@ struct SandboxFS {
     /// Cache of sandboxfs nodes indexed by their underlying path.
     cache: ArcCache,
 
+    /// Access logger.
+    access_logger: ArcAccessLogger,
+
     /// How long to tell the kernel to cache file metadata for.
     ttl: Timespec,
 
@@ -190,6 +195,9 @@ struct ReconfigurableSandboxFS {
 
     /// Cache of sandboxfs nodes indexed by their underlying path.
     cache: ArcCache,
+
+    /// Access logger.
+    access_logger: ArcAccessLogger,
 }
 
 /// Splits an absolute path into components, stripping the first root component.
@@ -213,18 +221,18 @@ fn split_abs_path(path: &Path) -> Vec<Component> {
 /// This code is shared by the application of `--mapping` flags and by the application of new
 /// mappings as part of a reconfiguration operation.  We want both processes to behave identically.
 fn apply_mapping(mapping: &Mapping, root: &dyn nodes::Node, ids: &IdGenerator,
-    cache: &dyn nodes::Cache) -> Fallible<nodes::ArcNode> {
+    cache: &dyn nodes::Cache, access_logger: &dyn nodes::AccessLogger) -> Fallible<nodes::ArcNode> {
     let components = split_abs_path(&mapping.path);
 
     // The input `root` node is an existing node that corresponds to the root.  If we don't find
     // any path components in the given mapping, it means we are trying to remap that same node.
     ensure!(!components.is_empty(), "Root can be mapped at most once");
 
-    root.map(&components, &mapping.underlying_path, mapping.writable, &ids, cache)
+    root.map(&components, &mapping.underlying_path, mapping.writable, &ids, cache, access_logger)
 }
 
 /// Creates the initial node hierarchy based on a collection of `mappings`.
-fn create_root(mappings: &[Mapping], ids: &IdGenerator, cache: &dyn nodes::Cache)
+fn create_root(mappings: &[Mapping], ids: &IdGenerator, cache: &dyn nodes::Cache, access_logger: &dyn nodes::AccessLogger)
     -> Fallible<nodes::ArcNode> {
     let now = time::get_time();
 
@@ -246,7 +254,7 @@ fn create_root(mappings: &[Mapping], ids: &IdGenerator, cache: &dyn nodes::Cache
     };
 
     for mapping in rest {
-        apply_mapping(mapping, root.as_ref(), ids, cache)
+        apply_mapping(mapping, root.as_ref(), ids, cache, access_logger)
             .with_context(|_| format!("Cannot map '{}'", mapping))?;
     }
 
@@ -255,12 +263,12 @@ fn create_root(mappings: &[Mapping], ids: &IdGenerator, cache: &dyn nodes::Cache
 
 impl SandboxFS {
     /// Creates a new `SandboxFS` instance.
-    fn create(mappings: &[Mapping], ttl: Timespec, cache: ArcCache, xattrs: bool)
+    fn create(mappings: &[Mapping], ttl: Timespec, cache: ArcCache, access_logger: ArcAccessLogger, xattrs: bool)
         -> Fallible<SandboxFS> {
         let ids = IdGenerator::new(fuse::FUSE_ROOT_ID);
 
         let mut nodes = HashMap::new();
-        let root = create_root(mappings, &ids, cache.as_ref())?;
+        let root = create_root(mappings, &ids, cache.as_ref(), access_logger.as_ref())?;
         assert_eq!(fuse::FUSE_ROOT_ID, root.inode());
         nodes.insert(root.inode(), root);
 
@@ -269,6 +277,7 @@ impl SandboxFS {
             nodes: Arc::from(Mutex::from(nodes)),
             handles: Arc::from(Mutex::from(HashMap::new())),
             cache: cache,
+            access_logger: access_logger,
             ttl: ttl,
             xattrs: xattrs,
         })
@@ -281,6 +290,7 @@ impl SandboxFS {
             ids: self.ids.clone(),
             nodes: self.nodes.clone(),
             cache: self.cache.clone(),
+            access_logger: self.access_logger.clone(),
         }
     }
 
@@ -334,7 +344,7 @@ impl SandboxFS {
         -> nodes::NodeResult<(fuse::FileAttr, u64)> {
         let dir_node = self.find_writable_node(parent)?;
         let (node, handle, attr) = dir_node.create(
-            name, nix_uid(req), nix_gid(req), mode, flags, &self.ids, self.cache.as_ref())?;
+            name, nix_uid(req), nix_gid(req), mode, flags, &self.ids, self.cache.as_ref(), self.access_logger.as_ref())?;
         self.insert_node(node);
         let fh = self.insert_handle(handle);
         Ok((attr, fh))
@@ -349,7 +359,7 @@ impl SandboxFS {
     /// Same as `lookup` but leaves the handling of the `fuse::Reply` to the caller.
     fn lookup2(&mut self, parent: u64, name: &OsStr) -> nodes::NodeResult<fuse::FileAttr> {
         let dir_node = self.find_node(parent)?;
-        let (node, attr) = dir_node.lookup(name, &self.ids, self.cache.as_ref())?;
+        let (node, attr) = dir_node.lookup(name, &self.ids, self.cache.as_ref(), self.access_logger.as_ref())?;
         let mut nodes = self.nodes.lock().unwrap();
         if !nodes.contains_key(&node.inode()) {
             nodes.insert(node.inode(), node);
@@ -362,7 +372,7 @@ impl SandboxFS {
         -> nodes::NodeResult<fuse::FileAttr> {
         let dir_node = self.find_writable_node(parent)?;
         let (node, attr) = dir_node.mkdir(
-            name, nix_uid(req), nix_gid(req), mode, &self.ids, self.cache.as_ref())?;
+            name, nix_uid(req), nix_gid(req), mode, &self.ids, self.cache.as_ref(), self.access_logger.as_ref())?;
         self.insert_node(node);
         Ok(attr)
     }
@@ -373,7 +383,7 @@ impl SandboxFS {
         let dir_node = self.find_writable_node(parent)?;
 
         let (node, attr) = dir_node.mknod(
-            name, nix_uid(req), nix_gid(req), mode, rdev, &self.ids, self.cache.as_ref())?;
+            name, nix_uid(req), nix_gid(req), mode, rdev, &self.ids, self.cache.as_ref(), self.access_logger.as_ref())?;
         self.insert_node(node);
         Ok(attr)
     }
@@ -403,17 +413,17 @@ impl SandboxFS {
         -> nodes::NodeResult<()> {
         let dir_node = self.find_writable_node(parent)?;
         if parent == new_parent {
-            dir_node.rename(name, new_name, self.cache.as_ref())
+            dir_node.rename(name, new_name, self.cache.as_ref(), self.access_logger.as_ref())
         } else {
             let new_dir_node = self.find_writable_node(new_parent)?;
-            dir_node.rename_and_move_source(name, new_dir_node, new_name, self.cache.as_ref())
+            dir_node.rename_and_move_source(name, new_dir_node, new_name, self.cache.as_ref(), self.access_logger.as_ref())
         }
     }
 
     /// Same as `rmdir` but leaves the handling of the `fuse::Reply` to the caller.
     fn rmdir2(&mut self, parent: u64, name: &OsStr) -> nodes::NodeResult<()> {
         let dir_node = self.find_writable_node(parent)?;
-        dir_node.rmdir(name, self.cache.as_ref())
+        dir_node.rmdir(name, self.cache.as_ref(), self.access_logger.as_ref())
     }
 
     /// Same as `setattr` but leaves the handling of the `fuse::Reply` to the caller.
@@ -438,7 +448,7 @@ impl SandboxFS {
         -> nodes::NodeResult<fuse::FileAttr> {
         let dir_node = self.find_writable_node(parent)?;
         let (node, attr) = dir_node.symlink(
-            name, link, nix_uid(req), nix_gid(req), &self.ids, self.cache.as_ref())?;
+            name, link, nix_uid(req), nix_gid(req), &self.ids, self.cache.as_ref(), self.access_logger.as_ref())?;
         self.insert_node(node);
         Ok(attr)
     }
@@ -446,7 +456,7 @@ impl SandboxFS {
     /// Same as `unlink` but leaves the handling of the `fuse::Reply` to the caller.
     fn unlink2(&mut self, parent: u64, name: &OsStr) -> nodes::NodeResult<()> {
         let dir_node = self.find_writable_node(parent)?;
-        dir_node.unlink(name, self.cache.as_ref())
+        dir_node.unlink(name, self.cache.as_ref(), self.access_logger.as_ref())
     }
 
     /// Same as `setxattr` but leaves the handling of the `fuse::Reply` to the caller.
@@ -645,7 +655,7 @@ impl fuse::Filesystem for SandboxFS {
     fn readdir(&mut self, _req: &fuse::Request, _inode: u64, handle: u64, offset: i64,
                mut reply: fuse::ReplyDirectory) {
         let handle = self.find_handle(handle);
-        match handle.readdir(&self.ids, self.cache.as_ref(), offset, &mut reply) {
+        match handle.readdir(&self.ids, self.cache.as_ref(), self.access_logger.as_ref(), offset, &mut reply) {
             Ok(()) => reply.ok(),
             Err(e) => reply.error(e.errno_as_i32()),
         }
@@ -792,7 +802,7 @@ impl reconfig::ReconfigurableFS for ReconfigurableSandboxFS {
                     mappings = &mappings[1..];
                     let m = Mapping::from_parts(
                         path, mapping.underlying_path.clone(), mapping.writable)?;
-                    apply_mapping(&m, self.root.as_ref(), self.ids.as_ref(), self.cache.as_ref())
+                    apply_mapping(&m, self.root.as_ref(), self.ids.as_ref(), self.cache.as_ref(), self.access_logger.as_ref())
                         .with_context(|_| format!("Cannot map '{}'", mapping))?
                 } else {
                     self.root.find_subdir(OsStr::new(id), self.ids.as_ref())?
@@ -807,7 +817,7 @@ impl reconfig::ReconfigurableFS for ReconfigurableSandboxFS {
         // for the top-level directory; what about all intermediate directories for all mappings?
         for mapping in mappings {
             apply_mapping(
-                mapping, root_node.clone().as_ref(), self.ids.as_ref(), self.cache.as_ref())
+                mapping, root_node.clone().as_ref(), self.ids.as_ref(), self.cache.as_ref(), self.access_logger.as_ref())
                     .with_context(|_| format!("Cannot map '{}'", mapping))?;
         }
         Ok(())
@@ -829,7 +839,7 @@ impl reconfig::ReconfigurableFS for ReconfigurableSandboxFS {
 /// Mounts a new sandboxfs instance on the given `mount_point` and maps all `mappings` within it.
 #[allow(clippy::too_many_arguments)]
 pub fn mount(mount_point: &Path, options: &[&str], mappings: &[Mapping], ttl: Timespec,
-    cache: ArcCache, xattrs: bool, input: fs::File, output: fs::File, threads: usize)
+    cache: ArcCache, access_logger: ArcAccessLogger, xattrs: bool, input: fs::File, output: fs::File, threads: usize)
     -> Fallible<()> {
     let mut os_options = options.iter().map(AsRef::as_ref).collect::<Vec<&OsStr>>();
 
@@ -838,7 +848,7 @@ pub fn mount(mount_point: &Path, options: &[&str], mappings: &[Mapping], ttl: Ti
     os_options.push(OsStr::new("-o"));
     os_options.push(OsStr::new("default_permissions"));
 
-    let mut fs = SandboxFS::create(mappings, ttl, cache, xattrs)?;
+    let mut fs = SandboxFS::create(mappings, ttl, cache, access_logger, xattrs)?;
     let reconfigurable_fs = fs.reconfigurable();
     info!("Mounting file system onto {:?}", mount_point);
 
