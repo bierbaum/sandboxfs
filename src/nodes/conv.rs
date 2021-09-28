@@ -23,18 +23,6 @@ use std::time::SystemTime;
 
 const NANOSECONDS_PER_SECOND: i64 = 1_000_000_000;
 
-// /// Fixed point in time to use when we fail to interpret file system supplied timestamps.
-// const BAD_TIME: Timespec = Timespec { sec: 0, nsec: 0 };
-
-// /// Converts a `time::Timespec` object into a `std::time::SystemTime`.
-// pub fn timespec_to_system_time(spec: Timespec) -> SystemTime {
-//     SystemTime::UNIX_EPOCH.checked_add(
-//         Duration::from_secs(spec.sec as u64)
-//             .checked_add(Duration::from_nanos(spec.nsec as u64))
-//             .expect("Time overflow")).expect("Time overflow")
-// }
-
-
 /// Converts a `std::time::SystemTime` object into a `sys::time::TimeSpec`.
 pub fn system_time_to_nix_timespec(val: SystemTime) -> sys::time::TimeSpec {
     let since_epoch = val.duration_since(SystemTime::UNIX_EPOCH).unwrap();
