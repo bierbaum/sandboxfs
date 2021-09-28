@@ -19,7 +19,7 @@ use nodes::{KernelError, NodeResult};
 use std::fs;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 const NANOSECONDS_PER_SECOND: i64 = 1_000_000_000;
 
@@ -66,6 +66,12 @@ pub fn time_or_now_to_system_time(val: TimeOrNow) -> SystemTime {
         TimeOrNow::SpecificTime(system_time) => system_time,
         TimeOrNow::Now => SystemTime::now(),
     }
+}
+
+pub fn system_time_with_second_resolution() -> SystemTime {
+    let now = SystemTime::now();
+    let duration = now.duration_since(SystemTime::UNIX_EPOCH).expect("Time overflow");
+    SystemTime::UNIX_EPOCH.checked_add(duration).expect("Time overflow")
 }
 
 /// Converts a file type as returned by the file system to a FUSE file type.
@@ -207,7 +213,7 @@ pub fn fileattrs_eq(attr1: &fuser::FileAttr, attr2: &fuser::FileAttr) -> bool {
 mod tests {
     use super::*;
 
-    use nix::{errno, unistd};
+    use nix::{unistd};
     use nix::sys::time::TimeValLike;
     use sys::time::TimeSpec;
     use std::fs::File;
@@ -216,7 +222,6 @@ mod tests {
     use std::os::unix;
     use std::time::Duration;
     use tempfile::tempdir;
-    use testutils;
 
     /// Creates a file at `path` with the given `content` and closes it.
     fn create_file(path: &Path, content: &str) {

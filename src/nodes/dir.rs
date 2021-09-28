@@ -13,7 +13,6 @@
 // under the License.
 
 extern crate fuser;
-extern crate time;
 
 use {create_as, IdGenerator};
 use failure::{Fallible, ResultExt};
@@ -367,7 +366,7 @@ impl Dir {
 
     // Same as `lookup` but with the node already locked.
     fn lookup_locked(writable: bool, state: &mut MutableDir, name: &OsStr, ids: &IdGenerator,
-        cache: &dyn Cache, access_logger: &dyn AccessLogger) -> NodeResult<(ArcNode, fuser::FileAttr)> {
+        cache: &dyn Cache, _access_logger: &dyn AccessLogger) -> NodeResult<(ArcNode, fuser::FileAttr)> {
         if let Some(dirent) = state.children.get(name) {
             let refreshed_attr = dirent.node.getattr()?;
             return Ok((dirent.node.clone(), refreshed_attr))
@@ -471,7 +470,7 @@ impl Node for Dir {
         fuser::FileType::Directory
     }
 
-    fn delete(&self, cache: &dyn Cache, access_logger: &dyn AccessLogger) {
+    fn delete(&self, cache: &dyn Cache, _access_logger: &dyn AccessLogger) {
         let mut state = self.state.lock().unwrap();
         assert!(
             state.underlying_path.is_some(),

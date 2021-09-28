@@ -38,14 +38,12 @@ extern crate signal_hook;
 #[cfg(test)] extern crate tempfile;
 #[cfg(test)] extern crate users;
 extern crate threadpool;
-extern crate time;
 extern crate xattr;
 
 use failure::{Fallible, ResultExt};
 use fuser::{MountOption, TimeOrNow};
 use nix::errno::Errno;
 use nix::{sys, unistd};
-use nodes::conv;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt;
@@ -57,7 +55,6 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime};
-use time::Timespec;
 
 mod concurrent;
 mod errors;
@@ -587,7 +584,7 @@ fn reply_xattr(size: u32, value: &[u8], reply: fuser::ReplyXattr) {
 }
 
 impl fuser::Filesystem for SandboxFS {
-    fn create(&mut self, req: &fuser::Request, parent: u64, name: &OsStr, mode: u32, umask: u32, flags: i32,
+    fn create(&mut self, req: &fuser::Request, parent: u64, name: &OsStr, mode: u32, _umask: u32, flags: i32,
         reply: fuser::ReplyCreate) {
         match self.create2(req, parent, name, mode, flags) {
             Ok((attr, fh)) => reply.created(&self.ttl, &attr, IdGenerator::GENERATION, fh, 0),
@@ -615,7 +612,7 @@ impl fuser::Filesystem for SandboxFS {
         }
     }
 
-    fn mkdir(&mut self, req: &fuser::Request, parent: u64, name: &OsStr, mode: u32, umask: u32,
+    fn mkdir(&mut self, req: &fuser::Request, parent: u64, name: &OsStr, mode: u32, _umask: u32,
         reply: fuser::ReplyEntry) {
         match self.mkdir2(req, parent, name, mode) {
             Ok(attr) => reply.entry(&self.ttl, &attr, IdGenerator::GENERATION),
@@ -623,7 +620,7 @@ impl fuser::Filesystem for SandboxFS {
         }
     }
 
-    fn mknod(&mut self, req: &fuser::Request, parent: u64, name: &OsStr, mode: u32, umask: u32, rdev: u32,
+    fn mknod(&mut self, req: &fuser::Request, parent: u64, name: &OsStr, mode: u32, _umask: u32, rdev: u32,
         reply: fuser::ReplyEntry) {
         match self.mknod2(req, parent, name, mode, rdev) {
             Ok(attr) => reply.entry(&self.ttl, &attr, IdGenerator::GENERATION),
@@ -700,7 +697,7 @@ impl fuser::Filesystem for SandboxFS {
 
     fn setattr(&mut self, _req: &fuser::Request, inode: u64, mode: Option<u32>, uid: Option<u32>,
         gid: Option<u32>, size: Option<u64>, atime: Option<TimeOrNow>, mtime: Option<TimeOrNow>,
-        ctime: Option<SystemTime>, _fh: Option<u64>, _crtime: Option<SystemTime>,
+        _ctime: Option<SystemTime>, _fh: Option<u64>, _crtime: Option<SystemTime>,
         _chgtime: Option<SystemTime>, _bkuptime: Option<SystemTime>, _flags: Option<u32>,
         reply: fuser::ReplyAttr) {
         match self.setattr2(inode, mode, uid, gid, size, atime, mtime) {

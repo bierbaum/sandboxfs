@@ -25,13 +25,14 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::result::Result;
 use std::sync::Arc;
-use std::time::{Instant, SystemTime};
+use std::time::SystemTime;
 
 mod caches;
 pub mod access_loggers;
 pub use self::caches::{NoCache, PathCache};
 pub mod conv;
 mod dir;
+use self::conv::system_time_with_second_resolution;
 pub use self::dir::Dir;
 mod file;
 pub use self::file::File;
@@ -208,8 +209,7 @@ pub fn setattr(path: Option<&PathBuf>, attr: &fuser::FileAttr, delta: &AttrDelta
     // TODO(https://github.com/bazelbuild/sandboxfs/issues/43): Revisit this when we track
     // ctimes purely on our own.
     let updated_ctime = {
-        let mut now = SystemTime::now();
-        // now.nsec = 0;
+        let now = system_time_with_second_resolution();
         if attr.ctime > now {
             attr.ctime
         } else {
