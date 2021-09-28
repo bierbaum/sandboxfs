@@ -237,7 +237,7 @@ fn apply_mapping(mapping: &Mapping, root: &dyn nodes::Node, ids: &IdGenerator,
 /// Creates the initial node hierarchy based on a collection of `mappings`.
 fn create_root(mappings: &[Mapping], ids: &IdGenerator, cache: &dyn nodes::Cache, access_logger: &dyn nodes::AccessLogger)
     -> Fallible<nodes::ArcNode> {
-    let now = time::get_time();
+    let now = SystemTime::now();
 
     let (root, rest) = if mappings.is_empty() {
         (nodes::Dir::new_empty(ids.next(), None, now), mappings)

@@ -29,8 +29,7 @@ use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
-
-use super::conv::timespec_to_system_time;
+use std::time::SystemTime;
 
 /// Takes the components of a path and returns the first normal component and the rest.
 ///
@@ -231,8 +230,7 @@ impl Dir {
     /// Creates a new scaffold directory to represent an in-memory directory.
     ///
     /// The directory's timestamps are set to `now` and the ownership is set to the current user.
-    pub fn new_empty(inode: u64, parent: Option<&dyn Node>, now: time::Timespec) -> ArcNode {
-        let now = timespec_to_system_time(now);
+    pub fn new_empty(inode: u64, parent: Option<&dyn Node>, now: SystemTime) -> ArcNode {
         let attr = fuser::FileAttr {
             ino: inode,
             kind: fuser::FileType::Directory,
@@ -311,7 +309,7 @@ impl Dir {
     /// This is purely a helper function for `map`.  As a result, the caller is responsible for
     /// inserting the new directory into the children of the current directory.
     fn new_scaffold_child(&self, underlying_path: Option<&PathBuf>, name: &OsStr, ids: &IdGenerator,
-        now: time::Timespec) -> ArcNode {
+        now: SystemTime) -> ArcNode {
         if let Some(path) = underlying_path {
             let child_path = path.join(name);
             match fs::symlink_metadata(&child_path) {
@@ -514,7 +512,7 @@ impl Node for Dir {
                 Ok(dirent.node.clone())
             },
             None => {
-                let child = self.new_scaffold_child(None, name, ids, time::get_time());
+                let child = self.new_scaffold_child(None, name, ids, SystemTime::now());
                 let dirent = Dirent { node: child.clone(), explicit_mapping: true };
                 state.children.insert(name.to_os_string(), dirent);
                 Ok(child)
@@ -544,7 +542,7 @@ impl Node for Dir {
                 .with_context(|_| format!("Stat failed for {:?}", underlying_path))?;
             cache.get_or_create(ids, underlying_path, &fs_attr, writable)
         } else {
-            self.new_scaffold_child(state.underlying_path.as_ref(), name, ids, time::get_time())
+            self.new_scaffold_child(state.underlying_path.as_ref(), name, ids, SystemTime::now())
         };
 
         let dirent = Dirent { node: child.clone(), explicit_mapping: true };

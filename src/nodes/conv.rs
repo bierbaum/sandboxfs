@@ -17,101 +17,47 @@ use nix::{errno, fcntl, sys};
 use nix::sys::time::{TimeVal, TimeValLike};
 use nodes::{KernelError, NodeResult};
 use std::fs;
-use std::io;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use time::Timespec;
-
-/// Fixed point in time to use when we fail to interpret file system supplied timestamps.
-const BAD_TIME: Timespec = Timespec { sec: 0, nsec: 0 };
-
-/// Converts a system time as represented in a fs::Metadata object to a Timespec.
-///
-/// `path` is the file from which the timestamp was originally extracted and `name` represents the
-/// metadata field the timestamp corresponds to; both are used for debugging purposes only.
-///
-/// If the given system time is missing, or if it is invalid, logs a warning and returns a fixed
-/// time.  It is reasonable for these details to be missing because the backing file systems do
-/// not always implement all possible file timestamps.
-fn system_time_to_timespec(path: &Path, name: &str, time: &io::Result<SystemTime>) -> Timespec {
-    match time {
-        Ok(time) => match time.duration_since(UNIX_EPOCH) {
-            Ok(duration) => Timespec::new(duration.as_secs() as i64,
-                                          duration.subsec_nanos() as i32),
-            Err(e) => {
-                warn!("File system returned {} {:?} for {:?} that's before the Unix epoch: {}",
-                      name, time, path, e);
-                BAD_TIME
-            }
-        },
-        Err(e) => {
-            debug!("File system did not return a {} timestamp for {:?}: {}", name, path, e);
-            BAD_TIME
-        },
-    }
-}
-
-/// Converts a `time::Timespec` object into a `std::time::SystemTime`.
-pub fn timespec_to_system_time(spec: Timespec) -> SystemTime {
-    let mut time = SystemTime::UNIX_EPOCH;
-
-    SystemTime::UNIX_EPOCH.checked_add(
-        Duration::from_secs(spec.sec as u64)
-            .checked_add(Duration::from_nanos(spec.nsec as u64))
-            .expect("Time overflow")).expect("Time overflow")
-}
-
-/// Converts a `time::Timespec` object into a `sys::time::TimeVal`.
-// TODO(jmmv): Consider upstreaming this function or a constructor for TimeVal that takes the two
-// components separately.
-pub fn timespec_to_timeval(spec: Timespec) -> sys::time::TimeVal {
-    use sys::time::TimeVal;
-    TimeVal::seconds(spec.sec) + TimeVal::nanoseconds(spec.nsec.into())
-}
-
-/// Converts a `sys::time::TimeVal` object into a `time::Timespec`.
-// TODO(jmmv): Consider upstreaming this function as a TimeVal method.
-pub fn timeval_to_timespec(val: sys::time::TimeVal) -> Timespec {
-    let usec = if val.tv_usec() > sys::time::suseconds_t::from(std::i32::MAX) {
-        warn!("Cannot represent too-long usec quantity {} in timespec; using 0", val.tv_usec());
-        0
-    } else {
-        val.tv_usec() as i32
-    };
-    Timespec::new(val.tv_sec() as sys::time::time_t, usec)
-}
-
-/// Converts a `sys::time::TimeVal` object into a `sys::time::TimeSpec`.
-pub fn timeval_to_nix_timespec(val: sys::time::TimeVal) -> sys::time::TimeSpec {
-    let usec = if val.tv_usec() > sys::time::suseconds_t::from(std::i32::MAX) {
-        warn!("Cannot represent too-long usec quantity {} in timespec; using 0", val.tv_usec());
-        0
-    } else {
-        val.tv_usec() as i64
-    };
-    sys::time::TimeSpec::nanoseconds((val.tv_sec() as i64) * 1_000_000_000 + usec)
-}
 
 const NANOSECONDS_PER_SECOND: i64 = 1_000_000_000;
 
+// /// Fixed point in time to use when we fail to interpret file system supplied timestamps.
+// const BAD_TIME: Timespec = Timespec { sec: 0, nsec: 0 };
+
+// /// Converts a `time::Timespec` object into a `std::time::SystemTime`.
+// pub fn timespec_to_system_time(spec: Timespec) -> SystemTime {
+//     SystemTime::UNIX_EPOCH.checked_add(
+//         Duration::from_secs(spec.sec as u64)
+//             .checked_add(Duration::from_nanos(spec.nsec as u64))
+//             .expect("Time overflow")).expect("Time overflow")
+// }
+
+
 /// Converts a `std::time::SystemTime` object into a `sys::time::TimeSpec`.
-pub fn system_time_to_nix_timespec(val: std::time::SystemTime) -> sys::time::TimeSpec {
+pub fn system_time_to_nix_timespec(val: SystemTime) -> sys::time::TimeSpec {
     let since_epoch = val.duration_since(SystemTime::UNIX_EPOCH).unwrap();
-    let nanos_since_epoch = NANOSECONDS_PER_SECOND.checked_mul(since_epoch.as_secs() as i64)
-        .expect("seconds of range")
-        .checked_add(since_epoch.subsec_nanos() as i64)
-        .expect("nanoseconds out of range");
+    let nanos_since_epoch =
+        NANOSECONDS_PER_SECOND
+            .checked_mul(since_epoch.as_secs() as i64)
+            .expect("Time overflow: seconds")
+            .checked_add(since_epoch.subsec_nanos() as i64)
+            .expect("Time overflow: nanoseconds");
     sys::time::TimeSpec::nanoseconds(nanos_since_epoch)
 }
 
 /// Converts a `std::time::SystemTime` object into a `sys::time::TimeVal`.
-pub fn system_time_to_timeval(val: std::time::SystemTime) -> sys::time::TimeVal {
+pub fn system_time_to_timeval(val: SystemTime) -> TimeVal {
     // TODO(wilhelm): Check this
     let since_epoch = val.duration_since(SystemTime::UNIX_EPOCH).unwrap();
-    sys::time::TimeVal::nanoseconds(since_epoch.as_secs() as i64 * 1_000_000_000 +
-        since_epoch.subsec_nanos() as i64)
-
+    let nanos_since_epoch =
+        NANOSECONDS_PER_SECOND
+            .checked_mul(since_epoch.as_secs() as i64)
+            .expect("Time overflow: seconds")
+            .checked_add(since_epoch.subsec_nanos() as i64)
+            .expect("Time overflow: nanoseconds");
+    sys::time::TimeVal::nanoseconds(nanos_since_epoch)
 }
 
 // Converts a `fuser::TimeNow` to `std::time::SystemTime`.
@@ -173,8 +119,6 @@ pub fn attr_fs_to_fuse(path: &Path, inode: u64, nlink: u32, attr: &fs::Metadata)
     // that flow via sandboxfs will affect the underlying ctime and propagate through here, which is
     // fine, but other operations are purely in-memory.  To properly handle those cases, we should
     // have our own ctime handling.
-    let ctime = Timespec { sec: attr.ctime(), nsec: attr.ctime_nsec() as i32 };
-    let ctime = timespec_to_system_time(ctime);
 
     let perm = match attr.permissions().mode() {
         // TODO(https://github.com/rust-lang/rust/issues/51577): Drop :: prefix.
@@ -207,7 +151,7 @@ pub fn attr_fs_to_fuse(path: &Path, inode: u64, nlink: u32, attr: &fs::Metadata)
         blksize: 0,
         atime: attr.accessed().unwrap_or(SystemTime::UNIX_EPOCH),
         mtime: attr.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-        ctime: ctime,
+        ctime: attr.created().unwrap_or(SystemTime::UNIX_EPOCH),
         crtime: attr.created().unwrap_or(SystemTime::UNIX_EPOCH),
         perm: perm,
         uid: attr.uid(),
@@ -265,8 +209,10 @@ mod tests {
 
     use nix::{errno, unistd};
     use nix::sys::time::TimeValLike;
+    use sys::time::TimeSpec;
     use std::fs::File;
     use std::io::{Read, Write};
+    use std::ops::Add;
     use std::os::unix;
     use std::time::Duration;
     use tempfile::tempdir;
@@ -280,60 +226,29 @@ mod tests {
     }
 
     #[test]
-    fn test_timespec_to_timeval() {
-        let spec = Timespec { sec: 123, nsec: 45000 };
-        let val = timespec_to_timeval(spec);
-        assert_eq!(123, val.tv_sec());
-        assert_eq!(45, val.tv_usec());
+    fn test_system_time_to_nix_timespec() {
+        let seconds = Duration::from_secs(123456789);
+        let nanos = Duration::from_nanos(54321);
+        let system_time =
+            SystemTime::UNIX_EPOCH.checked_add(seconds).unwrap().checked_add(nanos).unwrap();
+        let spec = {
+            TimeSpec::seconds(seconds.as_secs() as i64)
+                .add(TimeSpec::nanoseconds(nanos.as_nanos() as i64))
+        };
+        assert_eq!(system_time_to_nix_timespec(system_time), spec);
     }
 
     #[test]
-    fn test_timeval_to_timespec() {
-        let val = sys::time::TimeVal::seconds(654) + sys::time::TimeVal::nanoseconds(123_456);
-        let spec = timeval_to_timespec(val);
-        assert_eq!(654, spec.sec);
-        assert_eq!(123, spec.nsec);
-    }
-
-    #[test]
-    fn test_timeval_to_nix_timespec() {
-        let val = sys::time::TimeVal::seconds(654) + sys::time::TimeVal::nanoseconds(123_456);
-        let spec = timeval_to_nix_timespec(val);
-        assert_eq!(654, spec.tv_sec());
-        assert_eq!(123, spec.tv_nsec());
-    }
-
-    #[test]
-    fn test_system_time_to_timespec_ok() {
-        let sys_time = SystemTime::UNIX_EPOCH + Duration::new(12345, 6789);
-        let timespec = system_time_to_timespec(
-            &Path::new("irrelevant"), "irrelevant", &Ok(sys_time));
-        assert_eq!(Timespec { sec: 12345, nsec: 6789 }, timespec);
-    }
-
-    #[test]
-    fn test_system_time_to_timespec_bad() {
-        let sys_time = SystemTime::UNIX_EPOCH - Duration::new(1, 0);
-        let timespec = system_time_to_timespec(
-            &Path::new("irrelevant"), "irrelevant", &Ok(sys_time));
-        assert_eq!(BAD_TIME, timespec);
-    }
-
-    #[test]
-    fn test_system_time_to_timespec_missing() {
-        let timespec = system_time_to_timespec(
-            &Path::new("irrelevant"), "irrelevant",
-            &Err(io::Error::from_raw_os_error(errno::Errno::ENOENT as i32)));
-        assert_eq!(BAD_TIME, timespec);
-    }
-
-    #[test]
-    fn test_filetype_fs_to_fuse() {
-        let files = testutils::AllFileTypes::new();
-        for (exp_type, path) in files.entries {
-            let fs_type = fs::symlink_metadata(&path).unwrap().file_type();
-            assert_eq!(exp_type, filetype_fs_to_fuse(&path, fs_type));
-        }
+    fn test_system_time_to_timeval() {
+        let seconds = Duration::from_secs(123456789);
+        let nanos = Duration::from_nanos(54321);
+        let system_time =
+            SystemTime::UNIX_EPOCH.checked_add(seconds).unwrap().checked_add(nanos).unwrap();
+        let spec = {
+            TimeVal::seconds(seconds.as_secs() as i64)
+                .add(TimeVal::nanoseconds(nanos.as_nanos() as i64))
+        };
+        assert_eq!(system_time_to_timeval(system_time), spec);
     }
 
     #[test]
