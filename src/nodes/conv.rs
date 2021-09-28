@@ -93,12 +93,16 @@ pub fn timeval_to_nix_timespec(val: sys::time::TimeVal) -> sys::time::TimeSpec {
     sys::time::TimeSpec::nanoseconds((val.tv_sec() as i64) * 1_000_000_000 + usec)
 }
 
+const NANOSECONDS_PER_SECOND: i64 = 1_000_000_000;
+
 /// Converts a `std::time::SystemTime` object into a `sys::time::TimeSpec`.
 pub fn system_time_to_nix_timespec(val: std::time::SystemTime) -> sys::time::TimeSpec {
-    // TODO(wilhelm): Check this
     let since_epoch = val.duration_since(SystemTime::UNIX_EPOCH).unwrap();
-    sys::time::TimeSpec::nanoseconds(since_epoch.as_secs() as i64 * 1_000_000_000 +
-        since_epoch.subsec_nanos() as i64)
+    let nanos_since_epoch = NANOSECONDS_PER_SECOND.checked_mul(since_epoch.as_secs() as i64)
+        .expect("seconds of range")
+        .checked_add(since_epoch.subsec_nanos() as i64)
+        .expect("nanoseconds out of range");
+    sys::time::TimeSpec::nanoseconds(nanos_since_epoch)
 }
 
 /// Converts a `std::time::SystemTime` object into a `sys::time::TimeVal`.
