@@ -25,22 +25,23 @@
 #![warn(unsafe_code)]
 
 extern crate env_logger;
+extern crate fuser;
 #[macro_use]
 extern crate failure;
 extern crate getopts;
 #[macro_use]
 extern crate log;
 extern crate sandboxfs;
-extern crate time;
 
 use failure::{Fallible, ResultExt};
+use fuser::MountOption;
 use getopts::Options;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::result::Result;
 use std::sync::Arc;
-use time::Timespec;
+use std::time::Duration;
 
 /// Default value of the `--input` and `--output` flags.
 static DEFAULT_INOUT: &str = "-";
@@ -65,9 +66,9 @@ struct UsageError {
 ///
 /// Returns the collection of options, if any, to be passed to the FUSE mount operation in order to
 /// grant the requested permissions.
-fn parse_allow(s: &str) -> Fallible<&'static [&'static str]> {
+fn parse_allow(s: &str) -> Fallible<Option<MountOption>> {
     match s {
-        "other" => Ok(&["-o", "allow_other"]),
+        "other" => Ok(Some(MountOption::AllowOther)),
         "root" => {
             if cfg!(target_os = "linux") {
                 // "-o allow_root" is broken on Linux because this is not actually a
@@ -81,10 +82,10 @@ fn parse_allow(s: &str) -> Fallible<&'static [&'static str]> {
                 // but applies equally here).
                 Err(format_err!("--allow=root is known to be broken on Linux"))
             } else {
-                Ok(&["-o", "allow_root"])
+                Ok(Some(MountOption::AllowRoot))
             }
         }
-        "self" => Ok(&[]),
+        "self" => Ok(None),
         _ => {
             let message = format!("{} must be one of other, root, or self", s);
             Err(UsageError { message }.into())
@@ -93,7 +94,7 @@ fn parse_allow(s: &str) -> Fallible<&'static [&'static str]> {
 }
 
 /// Parses the value of a flag that takes a duration, which must specify its unit.
-fn parse_duration(s: &str) -> Result<Timespec, UsageError> {
+fn parse_duration(s: &str) -> Result<Duration, UsageError> {
     let (value, unit) = match s.find(|c| !char::is_ascii_digit(&c) && c != '-') {
         Some(pos) => s.split_at(pos),
         None => {
@@ -112,10 +113,7 @@ fn parse_duration(s: &str) -> Result<Timespec, UsageError> {
 
     value
         .parse::<u32>()
-        .map(|sec| Timespec {
-            sec: i64::from(sec),
-            nsec: 0,
-        })
+        .map(|sec| Duration::from_secs(sec as u64))
         .map_err(|e| UsageError {
             message: format!("invalid time specification {}: {}", s, e),
         })
@@ -285,6 +283,12 @@ fn safe_main(program: &str, args: &[String]) -> Fallible<()> {
     );
     opts.optflag("", "version", "prints version information and exits");
     opts.optflag("", "xattrs", "enables support for extended attributes");
+    opts.optopt(
+        "",
+        "log_directory_access",
+        "logs access to underlying directories to the given path",
+        "PATH",
+    );
     let matches = opts.parse(args)?;
 
     if matches.opt_present("help") {
@@ -297,12 +301,15 @@ fn safe_main(program: &str, args: &[String]) -> Fallible<()> {
         return Ok(());
     }
 
-    let mut options = vec!["-o", "fsname=sandboxfs"];
-    // TODO(jmmv): Support passing in arbitrary FUSE options from the command line, like "-o ro".
+    let mut os_opts = Vec::<MountOption>::new();
+    os_opts.push(MountOption::FSName("sandboxfs".to_owned()));
 
+    // TODO(jmmv): Support passing in arbitrary FUSE options from the command line, like "-o ro".
     if let Some(value) = matches.opt_str("allow") {
-        for arg in parse_allow(&value)? {
-            options.push(arg);
+        for arg in parse_allow(&value) {
+            if let Some(option) = arg {
+                os_opts.push(option);
+            }
         }
     }
 
@@ -369,9 +376,10 @@ fn safe_main(program: &str, args: &[String]) -> Fallible<()> {
         _profiler =
             sandboxfs::ScopedProfiler::start(&path).context("Failed to start CPU profile")?;
     };
+
     sandboxfs::mount(
         mount_point,
-        &options,
+        os_opts,
         &mappings,
         ttl,
         node_cache,
@@ -424,10 +432,7 @@ mod tests {
 
     #[test]
     fn test_parse_duration_ok() {
-        assert_eq!(
-            Timespec { sec: 1234, nsec: 0 },
-            parse_duration("1234s").unwrap()
-        );
+        assert_eq!(Duration::from_secs(1234), parse_duration("1234s").unwrap());
     }
 
     #[test]
@@ -459,7 +464,7 @@ mod tests {
         ];
         match parse_mappings(&args) {
             Ok(mappings) => assert_eq!(exp_mappings, mappings),
-            Err(e) => panic!(e),
+            Err(e) => assert_eq!(e.to_string(), ""),
         }
     }
 

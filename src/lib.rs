@@ -35,7 +35,7 @@
 extern crate cpuprofiler;
 #[macro_use]
 extern crate failure;
-extern crate fuse;
+extern crate fuser;
 #[macro_use]
 extern crate log;
 extern crate nix;
@@ -44,12 +44,12 @@ extern crate signal_hook;
 #[cfg(test)]
 extern crate tempfile;
 extern crate threadpool;
-extern crate time;
 #[cfg(test)]
 extern crate users;
 extern crate xattr;
 
 use failure::{Fallible, ResultExt};
+use fuser::{MountOption, TimeOrNow};
 use nix::errno::Errno;
 use nix::{sys, unistd};
 use std::collections::HashMap;
@@ -62,7 +62,7 @@ use std::result::Result;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use time::Timespec;
+use std::time::{Duration, SystemTime};
 
 mod concurrent;
 mod errors;
@@ -200,7 +200,7 @@ struct SandboxFS {
     cache: ArcCache,
 
     /// How long to tell the kernel to cache file metadata for.
-    ttl: Timespec,
+    ttl: Duration,
 
     /// Whether support for xattrs is enabled or not.
     xattrs: bool,
@@ -208,7 +208,7 @@ struct SandboxFS {
 
 /// A view of a `SandboxFS` instance to allow for concurrent reconfigurations.
 ///
-/// This structure exists because `fuse::mount` takes ownership of the file system so there is no
+/// This structure exists because `fuser::mount` takes ownership of the file system so there is no
 /// way for us to share that instance across threads.  Instead, we construct a reduced view of the
 /// fields we need for reconfiguration and pass those across threads.
 #[derive(Clone)]
@@ -279,7 +279,7 @@ fn create_root(
     ids: &IdGenerator,
     cache: &dyn nodes::Cache,
 ) -> Fallible<nodes::ArcNode> {
-    let now = time::get_time();
+    let now = SystemTime::now();
 
     let (root, rest) = if mappings.is_empty() {
         (nodes::Dir::new_empty(ids.next(), None, now), mappings)
@@ -323,15 +323,15 @@ impl SandboxFS {
     /// Creates a new `SandboxFS` instance.
     fn create(
         mappings: &[Mapping],
-        ttl: Timespec,
+        ttl: Duration,
         cache: ArcCache,
         xattrs: bool,
     ) -> Fallible<SandboxFS> {
-        let ids = IdGenerator::new(fuse::FUSE_ROOT_ID);
+        let ids = IdGenerator::new(fuser::FUSE_ROOT_ID);
 
         let mut nodes = HashMap::new();
         let root = create_root(mappings, &ids, cache.as_ref())?;
-        assert_eq!(fuse::FUSE_ROOT_ID, root.inode());
+        assert_eq!(fuser::FUSE_ROOT_ID, root.inode());
         nodes.insert(root.inode(), root);
 
         Ok(SandboxFS {
@@ -348,7 +348,7 @@ impl SandboxFS {
     fn reconfigurable(&mut self) -> ReconfigurableSandboxFS {
         ReconfigurableSandboxFS {
             root: self
-                .find_node(fuse::FUSE_ROOT_ID)
+                .find_node(fuser::FUSE_ROOT_ID)
                 .expect("Root node must always exist"),
             ids: self.ids.clone(),
             nodes: self.nodes.clone(),
@@ -404,15 +404,15 @@ impl SandboxFS {
         nodes.entry(node.inode()).or_insert(node);
     }
 
-    /// Same as `create` but leaves the handling of the `fuse::Reply` to the caller.
+    /// Same as `create` but leaves the handling of the `fuser::Reply` to the caller.
     fn create2(
         &mut self,
-        req: &fuse::Request,
+        req: &fuser::Request,
         parent: u64,
         name: &OsStr,
         mode: u32,
-        flags: u32,
-    ) -> nodes::NodeResult<(fuse::FileAttr, u64)> {
+        flags: i32,
+    ) -> nodes::NodeResult<(fuser::FileAttr, u64)> {
         let dir_node = self.find_writable_node(parent)?;
         let (node, handle, attr) = dir_node.create(
             name,
@@ -428,14 +428,14 @@ impl SandboxFS {
         Ok((attr, fh))
     }
 
-    /// Same as `getattr` but leaves the handling of the `fuse::Reply` to the caller.
-    fn getattr2(&mut self, inode: u64) -> nodes::NodeResult<fuse::FileAttr> {
+    /// Same as `getattr` but leaves the handling of the `fuser::Reply` to the caller.
+    fn getattr2(&mut self, inode: u64) -> nodes::NodeResult<fuser::FileAttr> {
         let node = self.find_node(inode)?;
         node.getattr()
     }
 
-    /// Same as `lookup` but leaves the handling of the `fuse::Reply` to the caller.
-    fn lookup2(&mut self, parent: u64, name: &OsStr) -> nodes::NodeResult<fuse::FileAttr> {
+    /// Same as `lookup` but leaves the handling of the `fuser::Reply` to the caller.
+    fn lookup2(&mut self, parent: u64, name: &OsStr) -> nodes::NodeResult<fuser::FileAttr> {
         let dir_node = self.find_node(parent)?;
         let (node, attr) = dir_node.lookup(name, &self.ids, self.cache.as_ref())?;
         let mut nodes = self.nodes.lock().unwrap();
@@ -445,14 +445,14 @@ impl SandboxFS {
         Ok(attr)
     }
 
-    /// Same as `mkdir` but leaves the handling of the `fuse::Reply` to the caller.
+    /// Same as `mkdir` but leaves the handling of the `fuser::Reply` to the caller.
     fn mkdir2(
         &mut self,
-        req: &fuse::Request,
+        req: &fuser::Request,
         parent: u64,
         name: &OsStr,
         mode: u32,
-    ) -> nodes::NodeResult<fuse::FileAttr> {
+    ) -> nodes::NodeResult<fuser::FileAttr> {
         let dir_node = self.find_writable_node(parent)?;
         let (node, attr) = dir_node.mkdir(
             name,
@@ -466,15 +466,15 @@ impl SandboxFS {
         Ok(attr)
     }
 
-    /// Same as `mknod` but leaves the handling of the `fuse::Reply` to the caller.
+    /// Same as `mknod` but leaves the handling of the `fuser::Reply` to the caller.
     fn mknod2(
         &mut self,
-        req: &fuse::Request,
+        req: &fuser::Request,
         parent: u64,
         name: &OsStr,
         mode: u32,
         rdev: u32,
-    ) -> nodes::NodeResult<fuse::FileAttr> {
+    ) -> nodes::NodeResult<fuser::FileAttr> {
         let dir_node = self.find_writable_node(parent)?;
 
         let (node, attr) = dir_node.mknod(
@@ -490,20 +490,20 @@ impl SandboxFS {
         Ok(attr)
     }
 
-    /// Same as `open` and `opendir` but leaves the handling of the `fuse::Reply` to the caller.
-    fn open2(&mut self, inode: u64, flags: u32) -> nodes::NodeResult<u64> {
+    /// Same as `open` and `opendir` but leaves the handling of the `fuser::Reply` to the caller.
+    fn open2(&mut self, inode: u64, flags: i32) -> nodes::NodeResult<u64> {
         let node = self.find_node(inode)?;
         let handle = node.open(flags)?;
         Ok(self.insert_handle(handle))
     }
 
-    /// Same as `readlink` but leaves the handling of the `fuse::Reply` to the caller.
+    /// Same as `readlink` but leaves the handling of the `fuser::Reply` to the caller.
     fn readlink2(&mut self, inode: u64) -> nodes::NodeResult<PathBuf> {
         let node = self.find_node(inode)?;
         node.readlink()
     }
 
-    /// Same as `release` and `releasedir` but leaves the handling of the `fuse::Reply` to the
+    /// Same as `release` and `releasedir` but leaves the handling of the `fuser::Reply` to the
     /// caller.
     fn release2(&mut self, fh: u64) {
         let mut handles = self.handles.lock().unwrap();
@@ -512,7 +512,7 @@ impl SandboxFS {
             .expect("Kernel tried to release an unknown handle");
     }
 
-    /// Same as `rename` but leaves the handling of the `fuse::Reply` to the caller.
+    /// Same as `rename` but leaves the handling of the `fuser::Reply` to the caller.
     fn rename2(
         &mut self,
         parent: u64,
@@ -529,13 +529,13 @@ impl SandboxFS {
         }
     }
 
-    /// Same as `rmdir` but leaves the handling of the `fuse::Reply` to the caller.
+    /// Same as `rmdir` but leaves the handling of the `fuser::Reply` to the caller.
     fn rmdir2(&mut self, parent: u64, name: &OsStr) -> nodes::NodeResult<()> {
         let dir_node = self.find_writable_node(parent)?;
         dir_node.rmdir(name, self.cache.as_ref())
     }
 
-    /// Same as `setattr` but leaves the handling of the `fuse::Reply` to the caller.
+    /// Same as `setattr` but leaves the handling of the `fuser::Reply` to the caller.
     #[allow(clippy::too_many_arguments)]
     fn setattr2(
         &mut self,
@@ -544,29 +544,29 @@ impl SandboxFS {
         uid: Option<u32>,
         gid: Option<u32>,
         size: Option<u64>,
-        atime: Option<Timespec>,
-        mtime: Option<Timespec>,
-    ) -> nodes::NodeResult<fuse::FileAttr> {
+        atime: Option<TimeOrNow>,
+        mtime: Option<TimeOrNow>,
+    ) -> nodes::NodeResult<fuser::FileAttr> {
         let node = self.find_writable_node(inode)?;
         let values = nodes::AttrDelta {
             mode: mode.map(|m| sys::stat::Mode::from_bits_truncate(m as sys::stat::mode_t)),
             uid: uid.map(unistd::Uid::from_raw),
             gid: gid.map(unistd::Gid::from_raw),
-            atime: atime.map(nodes::conv::timespec_to_timeval),
-            mtime: mtime.map(nodes::conv::timespec_to_timeval),
+            atime: atime,
+            mtime: mtime,
             size: size,
         };
         node.setattr(&values)
     }
 
-    /// Same as `symlink` but leaves the handling of the `fuse::Reply` to the caller.
+    /// Same as `symlink` but leaves the handling of the `fuser::Reply` to the caller.
     fn symlink2(
         &mut self,
-        req: &fuse::Request,
+        req: &fuser::Request,
         parent: u64,
         name: &OsStr,
         link: &Path,
-    ) -> nodes::NodeResult<fuse::FileAttr> {
+    ) -> nodes::NodeResult<fuser::FileAttr> {
         let dir_node = self.find_writable_node(parent)?;
         let (node, attr) = dir_node.symlink(
             name,
@@ -580,19 +580,19 @@ impl SandboxFS {
         Ok(attr)
     }
 
-    /// Same as `unlink` but leaves the handling of the `fuse::Reply` to the caller.
+    /// Same as `unlink` but leaves the handling of the `fuser::Reply` to the caller.
     fn unlink2(&mut self, parent: u64, name: &OsStr) -> nodes::NodeResult<()> {
         let dir_node = self.find_writable_node(parent)?;
         dir_node.unlink(name, self.cache.as_ref())
     }
 
-    /// Same as `setxattr` but leaves the handling of the `fuse::Reply` to the caller.
+    /// Same as `setxattr` but leaves the handling of the `fuser::Reply` to the caller.
     fn setxattr2(&mut self, inode: u64, name: &OsStr, value: &[u8]) -> nodes::NodeResult<()> {
         let node = self.find_writable_node(inode)?;
         node.setxattr(name, value)
     }
 
-    /// Same as `getxattr` but leaves the handling of the `fuse::Reply` to the caller.
+    /// Same as `getxattr` but leaves the handling of the `fuser::Reply` to the caller.
     fn getxattr2(&mut self, inode: u64, name: &OsStr) -> nodes::NodeResult<Vec<u8>> {
         let node = self.find_node(inode)?;
         match node.getxattr(name) {
@@ -613,13 +613,13 @@ impl SandboxFS {
         }
     }
 
-    /// Same as `listxattr` but leaves the handling of the `fuse::Reply` to the caller.
+    /// Same as `listxattr` but leaves the handling of the `fuser::Reply` to the caller.
     fn listxattr2(&mut self, inode: u64) -> nodes::NodeResult<Option<xattr::XAttrs>> {
         let node = self.find_node(inode)?;
         node.listxattr()
     }
 
-    /// Same as `removexattr` but leaves the handling of the `fuse::Reply` to the caller.
+    /// Same as `removexattr` but leaves the handling of the `fuser::Reply` to the caller.
     fn removexattr2(&mut self, inode: u64, name: &OsStr) -> nodes::NodeResult<()> {
         let node = self.find_writable_node(inode)?;
         node.removexattr(name)
@@ -674,13 +674,13 @@ fn create_as<T, E: From<Errno> + fmt::Display, P: AsRef<Path>>(
     Ok(result)
 }
 
-/// Returns a `unistd::Uid` representation of the UID in a `fuse::Request`.
-fn nix_uid(req: &fuse::Request) -> unistd::Uid {
+/// Returns a `unistd::Uid` representation of the UID in a `fuser::Request`.
+fn nix_uid(req: &fuser::Request) -> unistd::Uid {
     unistd::Uid::from_raw(req.uid() as u32)
 }
 
-/// Returns a `unistd::Gid` representation of the GID in a `fuse::Request`.
-fn nix_gid(req: &fuse::Request) -> unistd::Gid {
+/// Returns a `unistd::Gid` representation of the GID in a `fuser::Request`.
+fn nix_gid(req: &fuser::Request) -> unistd::Gid {
     unistd::Gid::from_raw(req.gid() as u32)
 }
 
@@ -707,7 +707,7 @@ fn xattrs_to_u8(xattrs: xattr::XAttrs) -> Vec<u8> {
 ///
 /// If `size` is zero, the kernel wants to know the length of `value`.  Otherwise, we are being
 /// asked for the actual value, which should not be longer than `size`.
-fn reply_xattr(size: u32, value: &[u8], reply: fuse::ReplyXattr) {
+fn reply_xattr(size: u32, value: &[u8], reply: fuser::ReplyXattr) {
     if size == 0 {
         if value.len() > std::u32::MAX as usize {
             warn!("xattr data too long ({} bytes); cannot reply", value.len());
@@ -722,15 +722,16 @@ fn reply_xattr(size: u32, value: &[u8], reply: fuse::ReplyXattr) {
     }
 }
 
-impl fuse::Filesystem for SandboxFS {
+impl fuser::Filesystem for SandboxFS {
     fn create(
         &mut self,
-        req: &fuse::Request,
+        req: &fuser::Request,
         parent: u64,
         name: &OsStr,
         mode: u32,
-        flags: u32,
-        reply: fuse::ReplyCreate,
+        _umask: u32,
+        flags: i32,
+        reply: fuser::ReplyCreate,
     ) {
         match self.create2(req, parent, name, mode, flags) {
             Ok((attr, fh)) => reply.created(&self.ttl, &attr, IdGenerator::GENERATION, fh, 0),
@@ -738,7 +739,7 @@ impl fuse::Filesystem for SandboxFS {
         }
     }
 
-    fn getattr(&mut self, _req: &fuse::Request, inode: u64, reply: fuse::ReplyAttr) {
+    fn getattr(&mut self, _req: &fuser::Request, inode: u64, reply: fuser::ReplyAttr) {
         match self.getattr2(inode) {
             Ok(attr) => reply.attr(&self.ttl, &attr),
             Err(e) => reply.error(e.errno_as_i32()),
@@ -747,17 +748,23 @@ impl fuse::Filesystem for SandboxFS {
 
     fn link(
         &mut self,
-        _req: &fuse::Request,
+        _req: &fuser::Request,
         _inode: u64,
         _newparent: u64,
         _newname: &OsStr,
-        reply: fuse::ReplyEntry,
+        reply: fuser::ReplyEntry,
     ) {
         // We don't support hardlinks at this point.
         reply.error(Errno::EPERM as i32);
     }
 
-    fn lookup(&mut self, _req: &fuse::Request, parent: u64, name: &OsStr, reply: fuse::ReplyEntry) {
+    fn lookup(
+        &mut self,
+        _req: &fuser::Request,
+        parent: u64,
+        name: &OsStr,
+        reply: fuser::ReplyEntry,
+    ) {
         match self.lookup2(parent, name) {
             Ok(attr) => reply.entry(&self.ttl, &attr, IdGenerator::GENERATION),
             Err(e) => reply.error(e.errno_as_i32()),
@@ -766,11 +773,12 @@ impl fuse::Filesystem for SandboxFS {
 
     fn mkdir(
         &mut self,
-        req: &fuse::Request,
+        req: &fuser::Request,
         parent: u64,
         name: &OsStr,
         mode: u32,
-        reply: fuse::ReplyEntry,
+        _umask: u32,
+        reply: fuser::ReplyEntry,
     ) {
         match self.mkdir2(req, parent, name, mode) {
             Ok(attr) => reply.entry(&self.ttl, &attr, IdGenerator::GENERATION),
@@ -780,12 +788,13 @@ impl fuse::Filesystem for SandboxFS {
 
     fn mknod(
         &mut self,
-        req: &fuse::Request,
+        req: &fuser::Request,
         parent: u64,
         name: &OsStr,
         mode: u32,
+        _umask: u32,
         rdev: u32,
-        reply: fuse::ReplyEntry,
+        reply: fuser::ReplyEntry,
     ) {
         match self.mknod2(req, parent, name, mode, rdev) {
             Ok(attr) => reply.entry(&self.ttl, &attr, IdGenerator::GENERATION),
@@ -793,14 +802,14 @@ impl fuse::Filesystem for SandboxFS {
         }
     }
 
-    fn open(&mut self, _req: &fuse::Request, inode: u64, flags: u32, reply: fuse::ReplyOpen) {
+    fn open(&mut self, _req: &fuser::Request, inode: u64, flags: i32, reply: fuser::ReplyOpen) {
         match self.open2(inode, flags) {
             Ok(fh) => reply.opened(fh, 0),
             Err(e) => reply.error(e.errno_as_i32()),
         }
     }
 
-    fn opendir(&mut self, _req: &fuse::Request, inode: u64, flags: u32, reply: fuse::ReplyOpen) {
+    fn opendir(&mut self, _req: &fuser::Request, inode: u64, flags: i32, reply: fuser::ReplyOpen) {
         match self.open2(inode, flags) {
             Ok(fh) => reply.opened(fh, 0),
             Err(e) => reply.error(e.errno_as_i32()),
@@ -809,12 +818,14 @@ impl fuse::Filesystem for SandboxFS {
 
     fn read(
         &mut self,
-        _req: &fuse::Request,
+        _req: &fuser::Request,
         _inode: u64,
         fh: u64,
         offset: i64,
         size: u32,
-        reply: fuse::ReplyData,
+        _flags: i32,
+        _lock_owner: Option<u64>,
+        reply: fuser::ReplyData,
     ) {
         let handle = self.find_handle(fh);
 
@@ -826,11 +837,11 @@ impl fuse::Filesystem for SandboxFS {
 
     fn readdir(
         &mut self,
-        _req: &fuse::Request,
+        _req: &fuser::Request,
         _inode: u64,
         handle: u64,
         offset: i64,
-        mut reply: fuse::ReplyDirectory,
+        mut reply: fuser::ReplyDirectory,
     ) {
         let handle = self.find_handle(handle);
         match handle.readdir(&self.ids, self.cache.as_ref(), offset, &mut reply) {
@@ -839,7 +850,7 @@ impl fuse::Filesystem for SandboxFS {
         }
     }
 
-    fn readlink(&mut self, _req: &fuse::Request, inode: u64, reply: fuse::ReplyData) {
+    fn readlink(&mut self, _req: &fuser::Request, inode: u64, reply: fuser::ReplyData) {
         match self.readlink2(inode) {
             Ok(target) => reply.data(target.as_os_str().as_bytes()),
             Err(e) => reply.error(e.errno_as_i32()),
@@ -848,13 +859,13 @@ impl fuse::Filesystem for SandboxFS {
 
     fn release(
         &mut self,
-        _req: &fuse::Request,
+        _req: &fuser::Request,
         _inode: u64,
         fh: u64,
-        _flags: u32,
-        _lock_owner: u64,
+        _flags: i32,
+        _lock_owner: Option<u64>,
         _flush: bool,
-        reply: fuse::ReplyEmpty,
+        reply: fuser::ReplyEmpty,
     ) {
         self.release2(fh);
         reply.ok();
@@ -862,11 +873,11 @@ impl fuse::Filesystem for SandboxFS {
 
     fn releasedir(
         &mut self,
-        _req: &fuse::Request,
+        _req: &fuser::Request,
         _inode: u64,
         fh: u64,
-        _flags: u32,
-        reply: fuse::ReplyEmpty,
+        _flags: i32,
+        reply: fuser::ReplyEmpty,
     ) {
         self.release2(fh);
         reply.ok();
@@ -874,12 +885,13 @@ impl fuse::Filesystem for SandboxFS {
 
     fn rename(
         &mut self,
-        _req: &fuse::Request,
+        _req: &fuser::Request,
         parent: u64,
         name: &OsStr,
         new_parent: u64,
         new_name: &OsStr,
-        reply: fuse::ReplyEmpty,
+        _flags: u32,
+        reply: fuser::ReplyEmpty,
     ) {
         match self.rename2(parent, name, new_parent, new_name) {
             Ok(()) => reply.ok(),
@@ -887,7 +899,13 @@ impl fuse::Filesystem for SandboxFS {
         }
     }
 
-    fn rmdir(&mut self, _req: &fuse::Request, parent: u64, name: &OsStr, reply: fuse::ReplyEmpty) {
+    fn rmdir(
+        &mut self,
+        _req: &fuser::Request,
+        parent: u64,
+        name: &OsStr,
+        reply: fuser::ReplyEmpty,
+    ) {
         match self.rmdir2(parent, name) {
             Ok(()) => reply.ok(),
             Err(e) => reply.error(e.errno_as_i32()),
@@ -896,20 +914,21 @@ impl fuse::Filesystem for SandboxFS {
 
     fn setattr(
         &mut self,
-        _req: &fuse::Request,
+        _req: &fuser::Request,
         inode: u64,
         mode: Option<u32>,
         uid: Option<u32>,
         gid: Option<u32>,
         size: Option<u64>,
-        atime: Option<Timespec>,
-        mtime: Option<Timespec>,
+        atime: Option<TimeOrNow>,
+        mtime: Option<TimeOrNow>,
+        _ctime: Option<SystemTime>,
         _fh: Option<u64>,
-        _crtime: Option<Timespec>,
-        _chgtime: Option<Timespec>,
-        _bkuptime: Option<Timespec>,
+        _crtime: Option<SystemTime>,
+        _chgtime: Option<SystemTime>,
+        _bkuptime: Option<SystemTime>,
         _flags: Option<u32>,
-        reply: fuse::ReplyAttr,
+        reply: fuser::ReplyAttr,
     ) {
         match self.setattr2(inode, mode, uid, gid, size, atime, mtime) {
             Ok(attr) => reply.attr(&self.ttl, &attr),
@@ -919,19 +938,28 @@ impl fuse::Filesystem for SandboxFS {
 
     fn symlink(
         &mut self,
-        req: &fuse::Request,
+        req: &fuser::Request,
         parent: u64,
         name: &OsStr,
         link: &Path,
-        reply: fuse::ReplyEntry,
+        reply: fuser::ReplyEntry,
     ) {
         match self.symlink2(req, parent, name, link) {
             Ok(attr) => reply.entry(&self.ttl, &attr, IdGenerator::GENERATION),
-            Err(e) => reply.error(e.errno_as_i32()),
+            Err(e) => {
+                log::error!("symlink resulted in error: {}", e);
+                reply.error(e.errno_as_i32())
+            }
         }
     }
 
-    fn unlink(&mut self, _req: &fuse::Request, parent: u64, name: &OsStr, reply: fuse::ReplyEmpty) {
+    fn unlink(
+        &mut self,
+        _req: &fuser::Request,
+        parent: u64,
+        name: &OsStr,
+        reply: fuser::ReplyEmpty,
+    ) {
         match self.unlink2(parent, name) {
             Ok(()) => reply.ok(),
             Err(e) => reply.error(e.errno_as_i32()),
@@ -940,13 +968,15 @@ impl fuse::Filesystem for SandboxFS {
 
     fn write(
         &mut self,
-        _req: &fuse::Request,
+        _req: &fuser::Request,
         _inode: u64,
         fh: u64,
         offset: i64,
         data: &[u8],
-        _flags: u32,
-        reply: fuse::ReplyWrite,
+        _write_flags: u32,
+        _flags: i32,
+        _lock_owner: Option<u64>,
+        reply: fuser::ReplyWrite,
     ) {
         let handle = self.find_handle(fh);
 
@@ -958,13 +988,13 @@ impl fuse::Filesystem for SandboxFS {
 
     fn setxattr(
         &mut self,
-        _req: &fuse::Request<'_>,
+        _req: &fuser::Request<'_>,
         inode: u64,
         name: &OsStr,
         value: &[u8],
-        _flags: u32,
+        _flags: i32,
         _position: u32,
-        reply: fuse::ReplyEmpty,
+        reply: fuser::ReplyEmpty,
     ) {
         if !self.xattrs {
             reply.error(Errno::ENOSYS as i32);
@@ -979,11 +1009,11 @@ impl fuse::Filesystem for SandboxFS {
 
     fn getxattr(
         &mut self,
-        _req: &fuse::Request<'_>,
+        _req: &fuser::Request<'_>,
         inode: u64,
         name: &OsStr,
         size: u32,
-        reply: fuse::ReplyXattr,
+        reply: fuser::ReplyXattr,
     ) {
         if !self.xattrs {
             reply.error(Errno::ENOSYS as i32);
@@ -998,10 +1028,10 @@ impl fuse::Filesystem for SandboxFS {
 
     fn listxattr(
         &mut self,
-        _req: &fuse::Request<'_>,
+        _req: &fuser::Request<'_>,
         inode: u64,
         size: u32,
-        reply: fuse::ReplyXattr,
+        reply: fuser::ReplyXattr,
     ) {
         if !self.xattrs {
             reply.error(Errno::ENOSYS as i32);
@@ -1023,10 +1053,10 @@ impl fuse::Filesystem for SandboxFS {
 
     fn removexattr(
         &mut self,
-        _req: &fuse::Request<'_>,
+        _req: &fuser::Request<'_>,
         inode: u64,
         name: &OsStr,
-        reply: fuse::ReplyEmpty,
+        reply: fuser::ReplyEmpty,
     ) {
         if !self.xattrs {
             reply.error(Errno::ENOSYS as i32);
@@ -1102,21 +1132,17 @@ impl reconfig::ReconfigurableFS for ReconfigurableSandboxFS {
 #[allow(clippy::too_many_arguments)]
 pub fn mount(
     mount_point: &Path,
-    options: &[&str],
+    mount_options: Vec<MountOption>,
     mappings: &[Mapping],
-    ttl: Timespec,
+    ttl: Duration,
     cache: ArcCache,
     xattrs: bool,
     input: fs::File,
     output: fs::File,
     threads: usize,
 ) -> Fallible<()> {
-    let mut os_options = options.iter().map(AsRef::as_ref).collect::<Vec<&OsStr>>();
-
-    // Delegate permissions checks to the kernel for efficiency and to avoid having to implement
-    // them on our own.
-    os_options.push(OsStr::new("-o"));
-    os_options.push(OsStr::new("default_permissions"));
+    let mut mount_options = mount_options;
+    mount_options.push(MountOption::DefaultPermissions);
 
     let mut fs = SandboxFS::create(mappings, ttl, cache, xattrs)?;
     let reconfigurable_fs = fs.reconfigurable();
@@ -1124,7 +1150,7 @@ pub fn mount(
 
     let (signals, mut session) = {
         let installer = concurrent::SignalsInstaller::prepare();
-        let session = fuse::Session::new(fs, &mount_point, &os_options)?;
+        let session = fuser::Session::new(fs, &mount_point, &mount_options[..])?;
         let signals = installer.install(PathBuf::from(mount_point))?;
         (signals, session)
     };

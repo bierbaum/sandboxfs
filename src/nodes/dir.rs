@@ -12,8 +12,7 @@
 // License for the specific language governing permissions and limitations
 // under the License.
 
-extern crate fuse;
-extern crate time;
+extern crate fuser;
 
 use failure::{Fallible, ResultExt};
 use nix::dir as rawdir;
@@ -29,6 +28,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{self as unix_fs, DirBuilderExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 use {create_as, IdGenerator};
 
 /// Takes the components of a path and returns the first normal component and the rest.
@@ -44,10 +44,10 @@ fn split_components<'a>(components: &'a [Component<'a>]) -> (&'a OsStr, &'a [Com
     (name, &components[1..])
 }
 
-/// Contents of a single `fuse::ReplyDirectory` reply; used for pagination.
+/// Contents of a single `fuser::ReplyDirectory` reply; used for pagination.
 struct ReplyEntry {
     inode: u64,
-    fs_type: fuse::FileType,
+    fs_type: fuser::FileType,
     name: OsString,
 }
 
@@ -86,12 +86,12 @@ impl OpenDir {
 
         reply.push(ReplyEntry {
             inode: self.inode,
-            fs_type: fuse::FileType::Directory,
+            fs_type: fuser::FileType::Directory,
             name: OsString::from("."),
         });
         reply.push(ReplyEntry {
             inode: state.parent,
-            fs_type: fuse::FileType::Directory,
+            fs_type: fuser::FileType::Directory,
             name: OsString::from(".."),
         });
 
@@ -186,7 +186,7 @@ impl Handle for OpenDir {
         ids: &IdGenerator,
         cache: &dyn Cache,
         offset: i64,
-        reply: &mut fuse::ReplyDirectory,
+        reply: &mut fuser::ReplyDirectory,
     ) -> NodeResult<()> {
         let mut offset: usize = offset as usize;
 
@@ -230,7 +230,7 @@ pub struct Dir {
 pub struct MutableDir {
     parent: u64,
     underlying_path: Option<PathBuf>,
-    attr: fuse::FileAttr,
+    attr: fuser::FileAttr,
     children: HashMap<OsString, Dirent>,
 }
 
@@ -238,10 +238,10 @@ impl Dir {
     /// Creates a new scaffold directory to represent an in-memory directory.
     ///
     /// The directory's timestamps are set to `now` and the ownership is set to the current user.
-    pub fn new_empty(inode: u64, parent: Option<&dyn Node>, now: time::Timespec) -> ArcNode {
-        let attr = fuse::FileAttr {
+    pub fn new_empty(inode: u64, parent: Option<&dyn Node>, now: SystemTime) -> ArcNode {
+        let attr = fuser::FileAttr {
             ino: inode,
-            kind: fuse::FileType::Directory,
+            kind: fuser::FileType::Directory,
             nlink: 2,  // "." entry plus whichever initial named node points at this.
             size: 2,   // TODO(jmmv): Reevaluate what directory sizes should be.
             blocks: 1, // TODO(jmmv): Reevaluate what directory blocks should be.
@@ -253,6 +253,7 @@ impl Dir {
             uid: unistd::getuid().as_raw(),
             gid: unistd::getgid().as_raw(),
             rdev: 0,
+            blksize: 0,
             flags: 0,
         };
 
@@ -328,7 +329,7 @@ impl Dir {
         underlying_path: Option<&PathBuf>,
         name: &OsStr,
         ids: &IdGenerator,
-        now: time::Timespec,
+        now: SystemTime,
     ) -> ArcNode {
         if let Some(path) = underlying_path {
             let child_path = path.join(name);
@@ -358,7 +359,7 @@ impl Dir {
     }
 
     /// Same as `getattr` but with the node already locked.
-    fn getattr_locked(inode: u64, state: &mut MutableDir) -> NodeResult<fuse::FileAttr> {
+    fn getattr_locked(inode: u64, state: &mut MutableDir) -> NodeResult<fuser::FileAttr> {
         if let Some(path) = &state.underlying_path {
             let fs_attr = fs::symlink_metadata(path)?;
             if !fs_attr.is_dir() {
@@ -401,7 +402,7 @@ impl Dir {
         name: &OsStr,
         ids: &IdGenerator,
         cache: &dyn Cache,
-    ) -> NodeResult<(ArcNode, fuse::FileAttr)> {
+    ) -> NodeResult<(ArcNode, fuser::FileAttr)> {
         if let Some(dirent) = state.children.get(name) {
             let refreshed_attr = dirent.node.getattr()?;
             return Ok((dirent.node.clone(), refreshed_attr));
@@ -447,10 +448,10 @@ impl Dir {
         state: &mut MutableDir,
         path: &Path,
         name: &OsStr,
-        exp_type: fuse::FileType,
+        exp_type: fuser::FileType,
         ids: &IdGenerator,
         cache: &dyn Cache,
-    ) -> NodeResult<(ArcNode, fuse::FileAttr)> {
+    ) -> NodeResult<(ArcNode, fuser::FileAttr)> {
         debug_assert_eq!(path.file_name().unwrap(), name);
 
         // TODO(https://github.com/bazelbuild/sandboxfs/issues/43): We abuse lookup here to handle
@@ -517,8 +518,8 @@ impl Node for Dir {
         self.writable
     }
 
-    fn file_type_cached(&self) -> fuse::FileType {
-        fuse::FileType::Directory
+    fn file_type_cached(&self) -> fuser::FileType {
+        fuser::FileType::Directory
     }
 
     fn delete(&self, cache: &dyn Cache) {
@@ -568,7 +569,7 @@ impl Node for Dir {
                 Ok(dirent.node.clone())
             }
             None => {
-                let child = self.new_scaffold_child(None, name, ids, time::get_time());
+                let child = self.new_scaffold_child(None, name, ids, SystemTime::now());
                 let dirent = Dirent {
                     node: child.clone(),
                     explicit_mapping: true,
@@ -599,7 +600,7 @@ impl Node for Dir {
             // TODO(jmmv): We should probably mark this dirent as an explicit mapping if it already
             // wasn't, but the Go variant of this code doesn't do this -- so investigate later.
             ensure!(
-                dirent.node.file_type_cached() == fuse::FileType::Directory
+                dirent.node.file_type_cached() == fuser::FileType::Directory
                     && !remainder.is_empty(),
                 "Already mapped"
             );
@@ -613,7 +614,7 @@ impl Node for Dir {
                 .with_context(|_| format!("Stat failed for {:?}", underlying_path))?;
             cache.get_or_create(ids, underlying_path, &fs_attr, writable)
         } else {
-            self.new_scaffold_child(state.underlying_path.as_ref(), name, ids, time::get_time())
+            self.new_scaffold_child(state.underlying_path.as_ref(), name, ids, SystemTime::now())
         };
 
         let dirent = Dirent {
@@ -626,7 +627,7 @@ impl Node for Dir {
             Ok(child)
         } else {
             ensure!(
-                child.file_type_cached() == fuse::FileType::Directory,
+                child.file_type_cached() == fuser::FileType::Directory,
                 "Already mapped"
             );
             child.map(remainder, underlying_path, writable, ids, cache)
@@ -667,10 +668,10 @@ impl Node for Dir {
         uid: unistd::Uid,
         gid: unistd::Gid,
         mode: u32,
-        flags: u32,
+        flags: i32,
         ids: &IdGenerator,
         cache: &dyn Cache,
-    ) -> NodeResult<(ArcNode, ArcHandle, fuse::FileAttr)> {
+    ) -> NodeResult<(ArcNode, ArcHandle, fuser::FileAttr)> {
         let mut state = self.state.lock().unwrap();
         let path = Dir::get_writable_path(&mut state, name)?;
 
@@ -690,14 +691,14 @@ impl Node for Dir {
             &mut state,
             &path,
             name,
-            fuse::FileType::RegularFile,
+            fuser::FileType::RegularFile,
             ids,
             cache,
         )?;
         Ok((node.clone(), node.handle_from(file), attr))
     }
 
-    fn getattr(&self) -> NodeResult<fuse::FileAttr> {
+    fn getattr(&self) -> NodeResult<fuser::FileAttr> {
         let mut state = self.state.lock().unwrap();
         Dir::getattr_locked(self.inode, &mut state)
     }
@@ -723,7 +724,7 @@ impl Node for Dir {
         name: &OsStr,
         ids: &IdGenerator,
         cache: &dyn Cache,
-    ) -> NodeResult<(ArcNode, fuse::FileAttr)> {
+    ) -> NodeResult<(ArcNode, fuser::FileAttr)> {
         let mut state = self.state.lock().unwrap();
         Dir::lookup_locked(self.writable, &mut state, name, ids, cache)
     }
@@ -736,7 +737,7 @@ impl Node for Dir {
         mode: u32,
         ids: &IdGenerator,
         cache: &dyn Cache,
-    ) -> NodeResult<(ArcNode, fuse::FileAttr)> {
+    ) -> NodeResult<(ArcNode, fuser::FileAttr)> {
         let mut state = self.state.lock().unwrap();
         let path = Dir::get_writable_path(&mut state, name)?;
 
@@ -752,7 +753,7 @@ impl Node for Dir {
             &mut state,
             &path,
             name,
-            fuse::FileType::Directory,
+            fuser::FileType::Directory,
             ids,
             cache,
         )
@@ -767,7 +768,7 @@ impl Node for Dir {
         rdev: u32,
         ids: &IdGenerator,
         cache: &dyn Cache,
-    ) -> NodeResult<(ArcNode, fuse::FileAttr)> {
+    ) -> NodeResult<(ArcNode, fuser::FileAttr)> {
         let mut state = self.state.lock().unwrap();
         let path = Dir::get_writable_path(&mut state, name)?;
 
@@ -799,10 +800,10 @@ impl Node for Dir {
         };
 
         let exp_filetype = match sflag {
-            sys::stat::SFlag::S_IFBLK => fuse::FileType::BlockDevice,
-            sys::stat::SFlag::S_IFCHR => fuse::FileType::CharDevice,
-            sys::stat::SFlag::S_IFIFO => fuse::FileType::NamedPipe,
-            sys::stat::SFlag::S_IFREG => fuse::FileType::RegularFile,
+            sys::stat::SFlag::S_IFBLK => fuser::FileType::BlockDevice,
+            sys::stat::SFlag::S_IFCHR => fuser::FileType::CharDevice,
+            sys::stat::SFlag::S_IFIFO => fuser::FileType::NamedPipe,
+            sys::stat::SFlag::S_IFREG => fuser::FileType::RegularFile,
             _ => {
                 warn!(
                     "mknod received request to create {} with type {:?}, which is not supported",
@@ -832,8 +833,7 @@ impl Node for Dir {
         )
     }
 
-    fn open(&self, flags: u32) -> NodeResult<ArcHandle> {
-        let flags = flags as i32;
+    fn open(&self, flags: i32) -> NodeResult<ArcHandle> {
         let oflag = fcntl::OFlag::from_bits_truncate(flags);
 
         let handle = {
@@ -944,7 +944,7 @@ impl Node for Dir {
         self.remove_any(name, |p| fs::remove_dir(p), cache)
     }
 
-    fn setattr(&self, delta: &AttrDelta) -> NodeResult<fuse::FileAttr> {
+    fn setattr(&self, delta: &AttrDelta) -> NodeResult<fuser::FileAttr> {
         let mut state = self.state.lock().unwrap();
         state.attr = setattr(state.underlying_path.as_ref(), &state.attr, delta)?;
         Ok(state.attr)
@@ -966,7 +966,7 @@ impl Node for Dir {
         gid: unistd::Gid,
         ids: &IdGenerator,
         cache: &dyn Cache,
-    ) -> NodeResult<(ArcNode, fuse::FileAttr)> {
+    ) -> NodeResult<(ArcNode, fuser::FileAttr)> {
         let mut state = self.state.lock().unwrap();
         let path = Dir::get_writable_path(&mut state, name)?;
 
@@ -982,7 +982,7 @@ impl Node for Dir {
             &mut state,
             &path,
             name,
-            fuse::FileType::Symlink,
+            fuser::FileType::Symlink,
             ids,
             cache,
         )

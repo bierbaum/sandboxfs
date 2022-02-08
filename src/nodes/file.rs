@@ -12,7 +12,7 @@
 // License for the specific language governing permissions and limitations
 // under the License.
 
-extern crate fuse;
+extern crate fuser;
 
 use failure::Fallible;
 use nix::errno;
@@ -93,7 +93,7 @@ pub struct File {
 /// Holds the mutable data of a file node.
 struct MutableFile {
     underlying_path: Option<PathBuf>,
-    attr: fuse::FileAttr,
+    attr: fuser::FileAttr,
 }
 
 impl File {
@@ -135,7 +135,7 @@ impl File {
     }
 
     /// Same as `getattr` but with the node already locked.
-    fn getattr_locked(inode: u64, state: &mut MutableFile) -> NodeResult<fuse::FileAttr> {
+    fn getattr_locked(inode: u64, state: &mut MutableFile) -> NodeResult<fuser::FileAttr> {
         if let Some(path) = &state.underlying_path {
             let fs_attr = fs::symlink_metadata(path)?;
             if !File::supports_type(fs_attr.file_type()) {
@@ -162,7 +162,7 @@ impl Node for File {
         self.writable
     }
 
-    fn file_type_cached(&self) -> fuse::FileType {
+    fn file_type_cached(&self) -> fuser::FileType {
         let state = self.state.lock().unwrap();
         state.attr.kind
     }
@@ -198,7 +198,7 @@ impl Node for File {
         Ok(())
     }
 
-    fn getattr(&self) -> NodeResult<fuse::FileAttr> {
+    fn getattr(&self) -> NodeResult<fuser::FileAttr> {
         let mut state = self.state.lock().unwrap();
         File::getattr_locked(self.inode, &mut state)
     }
@@ -223,7 +223,7 @@ impl Node for File {
         }
     }
 
-    fn open(&self, flags: u32) -> NodeResult<ArcHandle> {
+    fn open(&self, flags: i32) -> NodeResult<ArcHandle> {
         let state = self.state.lock().unwrap();
 
         let options = conv::flags_to_openoptions(flags, self.writable)?;
@@ -243,7 +243,7 @@ impl Node for File {
         }
     }
 
-    fn setattr(&self, delta: &AttrDelta) -> NodeResult<fuse::FileAttr> {
+    fn setattr(&self, delta: &AttrDelta) -> NodeResult<fuser::FileAttr> {
         let mut state = self.state.lock().unwrap();
         state.attr = setattr(state.underlying_path.as_ref(), &state.attr, delta)?;
         Ok(state.attr)

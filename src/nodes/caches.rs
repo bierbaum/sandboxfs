@@ -12,12 +12,14 @@
 // License for the specific language governing permissions and limitations
 // under the License.
 
+extern crate fuser;
+
 use nodes::{ArcNode, Cache, Dir, File, Symlink};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use {fuse, IdGenerator};
+use IdGenerator;
 
 /// Node factory without any caching.
 #[derive(Default)]
@@ -40,11 +42,11 @@ impl Cache for NoCache {
         }
     }
 
-    fn delete(&self, _path: &Path, _file_type: fuse::FileType) {
+    fn delete(&self, _path: &Path, _file_type: fuser::FileType) {
         // Nothing to do.
     }
 
-    fn rename(&self, _old_path: &Path, _new_path: PathBuf, _file_type: fuse::FileType) {
+    fn rename(&self, _old_path: &Path, _new_path: PathBuf, _file_type: fuser::FileType) {
         // Nothing to do.
     }
 }
@@ -130,9 +132,9 @@ impl Cache for PathCache {
         node
     }
 
-    fn delete(&self, path: &Path, file_type: fuse::FileType) {
+    fn delete(&self, path: &Path, file_type: fuser::FileType) {
         let mut entries = self.entries.lock().unwrap();
-        if file_type == fuse::FileType::Directory {
+        if file_type == fuser::FileType::Directory {
             debug_assert!(
                 !entries.contains_key(path),
                 "Directories are not currently cached"
@@ -144,9 +146,9 @@ impl Cache for PathCache {
         }
     }
 
-    fn rename(&self, old_path: &Path, new_path: PathBuf, file_type: fuse::FileType) {
+    fn rename(&self, old_path: &Path, new_path: PathBuf, file_type: fuser::FileType) {
         let mut entries = self.entries.lock().unwrap();
-        if file_type == fuse::FileType::Directory {
+        if file_type == fuser::FileType::Directory {
             debug_assert!(
                 !entries.contains_key(old_path),
                 "Directories are not currently cached"
