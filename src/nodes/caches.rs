@@ -14,21 +14,25 @@
 
 extern crate fuser;
 
-use IdGenerator;
 use nodes::{ArcNode, Cache, Dir, File, Symlink};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use IdGenerator;
 
 /// Node factory without any caching.
 #[derive(Default)]
-pub struct NoCache {
-}
+pub struct NoCache {}
 
 impl Cache for NoCache {
-    fn get_or_create(&self, ids: &IdGenerator, underlying_path: &Path, attr: &fs::Metadata,
-        writable: bool) -> ArcNode {
+    fn get_or_create(
+        &self,
+        ids: &IdGenerator,
+        underlying_path: &Path,
+        attr: &fs::Metadata,
+        writable: bool,
+    ) -> ArcNode {
         if attr.is_dir() {
             Dir::new_mapped(ids.next(), underlying_path, attr, writable)
         } else if attr.file_type().is_symlink() {
@@ -75,8 +79,13 @@ pub struct PathCache {
 }
 
 impl Cache for PathCache {
-    fn get_or_create(&self, ids: &IdGenerator, underlying_path: &Path, attr: &fs::Metadata,
-        writable: bool) -> ArcNode {
+    fn get_or_create(
+        &self,
+        ids: &IdGenerator,
+        underlying_path: &Path,
+        attr: &fs::Metadata,
+        writable: bool,
+    ) -> ArcNode {
         if attr.is_dir() {
             // Directories cannot be cached because they contain entries that are created only
             // in memory based on the mappings configuration.
@@ -106,8 +115,10 @@ impl Cache for PathCache {
             // reason is that the writability property is a setting of the mappings, not a property
             // of the underlying files, and thus it's a setting that we fully control and must keep
             // correct across reconfigurations or across different mappings of the same files.
-            info!("Missed node caching opportunity because writability has changed for {:?}",
-                underlying_path)
+            info!(
+                "Missed node caching opportunity because writability has changed for {:?}",
+                underlying_path
+            )
         }
 
         let node: ArcNode = if attr.is_dir() {
@@ -124,18 +135,28 @@ impl Cache for PathCache {
     fn delete(&self, path: &Path, file_type: fuser::FileType) {
         let mut entries = self.entries.lock().unwrap();
         if file_type == fuser::FileType::Directory {
-            debug_assert!(!entries.contains_key(path), "Directories are not currently cached");
+            debug_assert!(
+                !entries.contains_key(path),
+                "Directories are not currently cached"
+            );
         } else {
-            entries.remove(path).expect("Tried to delete unknown path from the cache");
+            entries
+                .remove(path)
+                .expect("Tried to delete unknown path from the cache");
         }
     }
 
     fn rename(&self, old_path: &Path, new_path: PathBuf, file_type: fuser::FileType) {
         let mut entries = self.entries.lock().unwrap();
         if file_type == fuser::FileType::Directory {
-            debug_assert!(!entries.contains_key(old_path), "Directories are not currently cached");
+            debug_assert!(
+                !entries.contains_key(old_path),
+                "Directories are not currently cached"
+            );
         } else {
-            let node = entries.remove(old_path).expect("Tried to rename unknown path in the cache");
+            let node = entries
+                .remove(old_path)
+                .expect("Tried to rename unknown path in the cache");
             entries.insert(new_path, node);
         }
     }
@@ -167,25 +188,55 @@ mod tests {
         let cache = PathCache::default();
 
         // Directories are not cached no matter what.
-        assert_eq!(1, cache.get_or_create(&ids, &dir1, &dir1attr, false).inode());
-        assert_eq!(2, cache.get_or_create(&ids, &dir1, &dir1attr, false).inode());
+        assert_eq!(
+            1,
+            cache.get_or_create(&ids, &dir1, &dir1attr, false).inode()
+        );
+        assert_eq!(
+            2,
+            cache.get_or_create(&ids, &dir1, &dir1attr, false).inode()
+        );
         assert_eq!(3, cache.get_or_create(&ids, &dir1, &dir1attr, true).inode());
 
         // Different files get different nodes.
-        assert_eq!(4, cache.get_or_create(&ids, &file1, &file1attr, false).inode());
-        assert_eq!(5, cache.get_or_create(&ids, &file2, &file2attr, true).inode());
+        assert_eq!(
+            4,
+            cache.get_or_create(&ids, &file1, &file1attr, false).inode()
+        );
+        assert_eq!(
+            5,
+            cache.get_or_create(&ids, &file2, &file2attr, true).inode()
+        );
 
         // Files we queried before but with different writability get different nodes.
-        assert_eq!(6, cache.get_or_create(&ids, &file1, &file1attr, true).inode());
-        assert_eq!(7, cache.get_or_create(&ids, &file2, &file2attr, false).inode());
+        assert_eq!(
+            6,
+            cache.get_or_create(&ids, &file1, &file1attr, true).inode()
+        );
+        assert_eq!(
+            7,
+            cache.get_or_create(&ids, &file2, &file2attr, false).inode()
+        );
 
         // We get cache hits when everything matches previous queries.
-        assert_eq!(6, cache.get_or_create(&ids, &file1, &file1attr, true).inode());
-        assert_eq!(7, cache.get_or_create(&ids, &file2, &file2attr, false).inode());
+        assert_eq!(
+            6,
+            cache.get_or_create(&ids, &file1, &file1attr, true).inode()
+        );
+        assert_eq!(
+            7,
+            cache.get_or_create(&ids, &file2, &file2attr, false).inode()
+        );
 
         // We don't get cache hits for nodes whose writability changed.
-        assert_eq!(8, cache.get_or_create(&ids, &file1, &file1attr, false).inode());
-        assert_eq!(9, cache.get_or_create(&ids, &file2, &file2attr, true).inode());
+        assert_eq!(
+            8,
+            cache.get_or_create(&ids, &file1, &file1attr, false).inode()
+        );
+        assert_eq!(
+            9,
+            cache.get_or_create(&ids, &file2, &file2attr, true).inode()
+        );
     }
 
     #[test]

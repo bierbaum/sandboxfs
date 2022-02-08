@@ -20,14 +20,14 @@ use std::env;
 use std::fs;
 use std::os::unix;
 use std::path::PathBuf;
-use tempfile::{TempDir, tempdir};
+use tempfile::{tempdir, TempDir};
 use users;
 
 /// Holds a temporary directory and files of all possible kinds within it.
 ///
 /// The directory (including all of its contents) is removed when this object is dropped.
 pub struct AllFileTypes {
-    #[allow(unused)]  // Must retain to delay directory deletion.
+    #[allow(unused)] // Must retain to delay directory deletion.
     root: TempDir,
 
     /// Collection of test files.
@@ -44,17 +44,27 @@ impl AllFileTypes {
     pub fn new() -> Self {
         let root = tempdir().unwrap();
 
-        let mut entries: Vec<(fuser::FileType, PathBuf)> = vec!();
+        let mut entries: Vec<(fuser::FileType, PathBuf)> = vec![];
 
         if unistd::getuid().is_root() {
             let block_device = root.path().join("block_device");
             sys::stat::mknod(
-                &block_device, sys::stat::SFlag::S_IFBLK, sys::stat::Mode::S_IRUSR, 50).unwrap();
+                &block_device,
+                sys::stat::SFlag::S_IFBLK,
+                sys::stat::Mode::S_IRUSR,
+                50,
+            )
+            .unwrap();
             entries.push((fuser::FileType::BlockDevice, block_device));
 
             let char_device = root.path().join("char_device");
             sys::stat::mknod(
-                &char_device, sys::stat::SFlag::S_IFCHR, sys::stat::Mode::S_IRUSR, 50).unwrap();
+                &char_device,
+                sys::stat::SFlag::S_IFCHR,
+                sys::stat::Mode::S_IRUSR,
+                50,
+            )
+            .unwrap();
             entries.push((fuser::FileType::CharDevice, char_device));
         } else {
             warn!("Not running as root; cannot create block/char devices");
@@ -94,7 +104,8 @@ impl Config {
     /// Queries the test configuration.
     pub fn get() -> Config {
         let unprivileged_user = env::var("UNPRIVILEGED_USER")
-            .map(|name| users::get_user_by_name(&name)).unwrap_or(None);
+            .map(|name| users::get_user_by_name(&name))
+            .unwrap_or(None);
         Config { unprivileged_user }
     }
 }

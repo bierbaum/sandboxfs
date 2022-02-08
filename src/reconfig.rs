@@ -12,19 +12,19 @@
 // License for the specific language governing permissions and limitations
 // under the License.
 
-use {Mapping, MappingError};
 use errors::flatten_causes;
 use failure::{Fallible, ResultExt};
 use nix::unistd;
 use serde_derive::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::path::{self, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use threadpool::ThreadPool;
+use {Mapping, MappingError};
 
 /// A shareable view into a reconfigurable file system.
 pub trait ReconfigurableFS {
@@ -123,14 +123,18 @@ impl Prefixes {
                     Entry::Occupied(e) => {
                         let previous_path = e.get();
                         if previous_path != path {
-                            return Err(format_err!("Prefix {} already had path {} but got new {}",
-                                id, previous_path.display(), path.display()));
+                            return Err(format_err!(
+                                "Prefix {} already had path {} but got new {}",
+                                id,
+                                previous_path.display(),
+                                path.display()
+                            ));
                         }
-                    },
+                    }
                     Entry::Vacant(e) => {
                         e.insert(path.clone());
                         count += 1;
-                    },
+                    }
                 };
             }
             if count > 0 {
@@ -139,21 +143,29 @@ impl Prefixes {
 
             for m in &request.mappings {
                 match self.data.get(&m.path_prefix) {
-                    Some(prefix) => used_prefixes.entry(m.path_prefix)
+                    Some(prefix) => used_prefixes
+                        .entry(m.path_prefix)
                         .or_insert_with(|| prefix.clone()),
                     None => return Err(format_err!("Prefix {} does not exist", m.path_prefix)),
                 };
 
                 match self.data.get(&m.underlying_path_prefix) {
-                    Some(prefix) => used_prefixes.entry(m.underlying_path_prefix)
+                    Some(prefix) => used_prefixes
+                        .entry(m.underlying_path_prefix)
                         .or_insert_with(|| prefix.clone()),
-                    None => return
-                        Err(format_err!("Prefix {} does not exist", m.underlying_path_prefix)),
+                    None => {
+                        return Err(format_err!(
+                            "Prefix {} does not exist",
+                            m.underlying_path_prefix
+                        ))
+                    }
                 };
             }
         }
 
-        Ok(Prefixes { data: used_prefixes })
+        Ok(Prefixes {
+            data: used_prefixes,
+        })
     }
 
     /// Builds a path given a `prefix` (which must exist) and an arbitrary `suffix`.
@@ -161,7 +173,10 @@ impl Prefixes {
         if prefix != 0 && suffix.starts_with('/') {
             return Err(format_err!("Suffix {} must be relative", suffix));
         }
-        let prefix = self.data.get(&prefix).expect("Prefix existence validated in register()");
+        let prefix = self
+            .data
+            .get(&prefix)
+            .expect("Prefix existence validated in register()");
         if suffix.is_empty() {
             Ok(prefix.clone())
         } else {
@@ -190,7 +205,10 @@ fn validate_id(id: &str) -> Fallible<()> {
 pub fn make_path<P: AsRef<Path>>(id: &str, abs_path: P) -> Fallible<PathBuf> {
     let abs_path = abs_path.as_ref();
     if !abs_path.is_absolute() {
-        return Err(MappingError::PathNotAbsolute { path: abs_path.to_owned() }.into());
+        return Err(MappingError::PathNotAbsolute {
+            path: abs_path.to_owned(),
+        }
+        .into());
     }
 
     let rel_path = abs_path.strip_prefix("/").unwrap();
@@ -202,32 +220,42 @@ pub fn make_path<P: AsRef<Path>>(id: &str, abs_path: P) -> Fallible<PathBuf> {
 }
 
 /// Applies a reconfiguration request to the given file system.
-fn handle_request<F: ReconfigurableFS>(request: Request, fs: &F, prefixes: Fallible<Prefixes>)
-    -> Fallible<()> {
-    let prefixes = &prefixes?;  // Unwrap any possible error as part of this request.
+fn handle_request<F: ReconfigurableFS>(
+    request: Request,
+    fs: &F,
+    prefixes: Fallible<Prefixes>,
+) -> Fallible<()> {
+    let prefixes = &prefixes?; // Unwrap any possible error as part of this request.
     match request {
         Request::CreateSandbox(request) => {
             validate_id(&request.id)?;
             let mut mappings = Vec::with_capacity(request.mappings.len());
             for mapping in request.mappings {
                 let path = prefixes.build_path(mapping.path_prefix, &mapping.path)?;
-                let underlying_path = prefixes.build_path(mapping.underlying_path_prefix,
-                    &mapping.underlying_path)?;
-                mappings.push(Mapping::from_parts(path, underlying_path, mapping.writable)?);
+                let underlying_path = prefixes
+                    .build_path(mapping.underlying_path_prefix, &mapping.underlying_path)?;
+                mappings.push(Mapping::from_parts(
+                    path,
+                    underlying_path,
+                    mapping.writable,
+                )?);
             }
 
             Ok(fs.create_sandbox(&request.id, &mappings)?)
-        },
+        }
         Request::DestroySandbox(id) => {
             validate_id(&id)?;
             Ok(fs.destroy_sandbox(&id)?)
-        },
+        }
     }
 }
 
 /// Responds to a reconfiguration request with the details contained in a result object.
-fn respond(writer: Arc<Mutex<io::BufWriter<impl Write>>>, id: Option<String>, result: Fallible<()>)
-    -> Fallible<()> {
+fn respond(
+    writer: Arc<Mutex<io::BufWriter<impl Write>>>,
+    id: Option<String>,
+    result: Fallible<()>,
+) -> Fallible<()> {
     let mut writer = writer.lock().unwrap();
     let response = Response {
         id: id,
@@ -247,9 +275,8 @@ fn run_loop_aux(
     reader: impl Read,
     writer: impl Write + Send + Sync + 'static,
     pool: &ThreadPool,
-    fs: &(impl ReconfigurableFS + Send + Sync + Clone + 'static))
-    -> Fallible<()> {
-
+    fs: &(impl ReconfigurableFS + Send + Sync + Clone + 'static),
+) -> Fallible<()> {
     let mut reader = io::BufReader::new(reader);
     let writer = Arc::from(Mutex::from(io::BufWriter::new(writer)));
     let mut stream = serde_json::Deserializer::from_reader(&mut reader).into_iter::<Request>();
@@ -272,16 +299,16 @@ fn run_loop_aux(
                         warn!("Failed to write response: {}", e);
                     }
                 });
-            },
+            }
             Some(Err(e)) => {
-                assert!(!e.is_eof());  // Handled below.
+                assert!(!e.is_eof()); // Handled below.
                 let result = Err(format_err!("{}", e));
                 respond(writer, None, Err(e.into()))?;
                 // Parsing failed due to invalid JSON data.  Would be nice to recover from this by
                 // advancing the stream to the next valid request, but this is currently not
                 // possible; see https://github.com/serde-rs/json/issues/70.
                 return result;
-            },
+            }
             None => {
                 return Ok(());
             }
@@ -304,9 +331,8 @@ pub fn run_loop(
     reader: impl Read,
     writer: impl Write + Send + Sync + 'static,
     threads: usize,
-    fs: &(impl ReconfigurableFS + Send + Sync + Clone + 'static))
-    -> Fallible<()> {
-
+    fs: &(impl ReconfigurableFS + Send + Sync + Clone + 'static),
+) -> Fallible<()> {
     info!("Using {} threads for reconfigurations", threads);
     let pool = ThreadPool::new(threads);
     let result = run_loop_aux(reader, writer, &pool, fs);
@@ -321,9 +347,7 @@ pub fn run_loop(
 pub fn open_input<P: AsRef<Path>>(path: Option<P>) -> Fallible<fs::File> {
     match path.as_ref() {
         Some(path) => Ok(fs::File::open(&path)?),
-        None => unsafe {
-            Ok(fs::File::from_raw_fd(unistd::dup(io::stdin().as_raw_fd())?))
-        },
+        None => unsafe { Ok(fs::File::from_raw_fd(unistd::dup(io::stdin().as_raw_fd())?)) },
     }
 }
 
@@ -335,22 +359,29 @@ pub fn open_output<P: AsRef<Path>>(path: Option<P>) -> Fallible<fs::File> {
     match path.as_ref() {
         Some(path) => Ok(fs::OpenOptions::new().write(true).open(&path)?),
         None => unsafe {
-            Ok(fs::File::from_raw_fd(unistd::dup(io::stdout().as_raw_fd())?))
+            Ok(fs::File::from_raw_fd(unistd::dup(
+                io::stdout().as_raw_fd(),
+            )?))
         },
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use std::collections::HashMap;
     use std::io::Seek;
     use std::sync::Mutex;
-    use super::*;
     use tempfile;
 
     /// Syntactic sugar to instantiate a new `JsonStep::Map` for testing purposes only.
-    fn new_mapping(path: &str, path_prefix: u32, underlying_path: &str, underlying_path_prefix: u32,
-        writable: bool) -> JsonMapping {
+    fn new_mapping(
+        path: &str,
+        path_prefix: u32,
+        underlying_path: &str,
+        underlying_path_prefix: u32,
+        writable: bool,
+    ) -> JsonMapping {
         JsonMapping {
             path: path.to_owned(),
             path_prefix: path_prefix,
@@ -361,15 +392,16 @@ mod tests {
     }
 
     /// Syntactic sugar to instantiate a new `Request::CreateSandbox` for testing purposes only.
-    fn new_create_sandbox(id: &str, mappings: &[JsonMapping], prefixes: HashMap<String, PathBuf>)
-        -> Request {
-        Request::CreateSandbox(
-            CreateSandboxRequest {
-                id: id.to_owned(),
-                mappings: mappings.to_owned(),
-                prefixes: prefixes,
-            }
-        )
+    fn new_create_sandbox(
+        id: &str,
+        mappings: &[JsonMapping],
+        prefixes: HashMap<String, PathBuf>,
+    ) -> Request {
+        Request::CreateSandbox(CreateSandboxRequest {
+            id: id.to_owned(),
+            mappings: mappings.to_owned(),
+            prefixes: prefixes,
+        })
     }
 
     /// Syntactic sugar to instantiate a new `Request::DestroySandbox` for testing purposes only.
@@ -384,10 +416,14 @@ mod tests {
         let mut request_prefixes: HashMap<String, PathBuf> = HashMap::new();
         request_prefixes.insert("1".to_owned(), PathBuf::from("/"));
         request_prefixes.insert("2".to_owned(), PathBuf::from("/some/dir"));
-        let request = new_create_sandbox("irrelevant", &[
-            new_mapping("foo", 1, "bar", 1, false),
-            new_mapping("another", 2, "bar", 1, false),
-        ], request_prefixes);
+        let request = new_create_sandbox(
+            "irrelevant",
+            &[
+                new_mapping("foo", 1, "bar", 1, false),
+                new_mapping("another", 2, "bar", 1, false),
+            ],
+            request_prefixes,
+        );
 
         let subset = prefixes.register(&request).unwrap();
         assert_eq!(3, prefixes.data.len());
@@ -405,9 +441,11 @@ mod tests {
 
         let mut request_prefixes: HashMap<String, PathBuf> = HashMap::new();
         request_prefixes.insert("1".to_owned(), PathBuf::from("/"));
-        let request = new_create_sandbox("irrelevant", &[
-            new_mapping("foo", 1, "bar", 1, false),
-        ], request_prefixes);
+        let request = new_create_sandbox(
+            "irrelevant",
+            &[new_mapping("foo", 1, "bar", 1, false)],
+            request_prefixes,
+        );
 
         let subset = prefixes.register(&request).unwrap();
         assert_eq!(2, prefixes.data.len());
@@ -418,9 +456,11 @@ mod tests {
 
         let mut request_prefixes: HashMap<String, PathBuf> = HashMap::new();
         request_prefixes.insert("2".to_owned(), PathBuf::from("/other"));
-        let request = new_create_sandbox("irrelevant", &[
-            new_mapping("foo", 2, "bar", 2, false),
-        ], request_prefixes);
+        let request = new_create_sandbox(
+            "irrelevant",
+            &[new_mapping("foo", 2, "bar", 2, false)],
+            request_prefixes,
+        );
 
         let subset = prefixes.register(&request).unwrap();
         assert_eq!(3, prefixes.data.len());
@@ -438,9 +478,11 @@ mod tests {
         let mut request_prefixes: HashMap<String, PathBuf> = HashMap::new();
         request_prefixes.insert("1".to_owned(), PathBuf::from("/first"));
         request_prefixes.insert("3".to_owned(), PathBuf::from("/third"));
-        let request = new_create_sandbox("irrelevant", &[
-            new_mapping("foo", 3, "bar", 1, false),
-        ], request_prefixes);
+        let request = new_create_sandbox(
+            "irrelevant",
+            &[new_mapping("foo", 3, "bar", 1, false)],
+            request_prefixes,
+        );
 
         let subset = prefixes.register(&request).unwrap();
         assert_eq!(3, prefixes.data.len());
@@ -453,9 +495,11 @@ mod tests {
 
         let mut request_prefixes: HashMap<String, PathBuf> = HashMap::new();
         request_prefixes.insert("2".to_owned(), PathBuf::from("/second"));
-        let request = new_create_sandbox("irrelevant", &[
-            new_mapping("foo", 2, "bar", 3, false),
-        ], request_prefixes);
+        let request = new_create_sandbox(
+            "irrelevant",
+            &[new_mapping("foo", 2, "bar", 3, false)],
+            request_prefixes,
+        );
 
         let subset = prefixes.register(&request).unwrap();
         assert_eq!(4, prefixes.data.len());
@@ -475,20 +519,27 @@ mod tests {
         let mut request_prefixes: HashMap<String, PathBuf> = HashMap::new();
         request_prefixes.insert("1".to_owned(), PathBuf::from("/first"));
         request_prefixes.insert("3".to_owned(), PathBuf::from("/third"));
-        let request = new_create_sandbox("irrelevant", &[
-            new_mapping("foo", 3, "bar", 1, false),
-        ], request_prefixes);
+        let request = new_create_sandbox(
+            "irrelevant",
+            &[new_mapping("foo", 3, "bar", 1, false)],
+            request_prefixes,
+        );
 
         prefixes.register(&request).unwrap();
 
         let mut request_prefixes: HashMap<String, PathBuf> = HashMap::new();
         request_prefixes.insert("3".to_owned(), PathBuf::from("/other"));
-        let request = new_create_sandbox("irrelevant", &[
-            new_mapping("foo", 3, "bar", 1, false),
-        ], request_prefixes);
+        let request = new_create_sandbox(
+            "irrelevant",
+            &[new_mapping("foo", 3, "bar", 1, false)],
+            request_prefixes,
+        );
 
         let err = prefixes.register(&request).unwrap_err();
-        assert_eq!("Prefix 3 already had path /third but got new /other", format!("{}", err));
+        assert_eq!(
+            "Prefix 3 already had path /third but got new /other",
+            format!("{}", err)
+        );
     }
 
     #[test]
@@ -497,9 +548,11 @@ mod tests {
 
         let mut request_prefixes: HashMap<String, PathBuf> = HashMap::new();
         request_prefixes.insert("-5".to_owned(), PathBuf::from("/"));
-        let request = new_create_sandbox("irrelevant", &[
-            new_mapping("foo", 3, "bar", 1, false),
-        ], request_prefixes);
+        let request = new_create_sandbox(
+            "irrelevant",
+            &[new_mapping("foo", 3, "bar", 1, false)],
+            request_prefixes,
+        );
 
         let err = prefixes.register(&request).unwrap_err();
         assert_eq!("Bad prefix number", format!("{}", err));
@@ -511,9 +564,11 @@ mod tests {
 
         let mut request_prefixes: HashMap<String, PathBuf> = HashMap::new();
         request_prefixes.insert("7".to_owned(), PathBuf::from("/"));
-        let request = new_create_sandbox("irrelevant", &[
-            new_mapping("foo", 5, "bar", 7, false),
-        ], request_prefixes);
+        let request = new_create_sandbox(
+            "irrelevant",
+            &[new_mapping("foo", 5, "bar", 7, false)],
+            request_prefixes,
+        );
 
         let err = prefixes.register(&request).unwrap_err();
         assert_eq!("Prefix 5 does not exist", format!("{}", err));
@@ -525,9 +580,11 @@ mod tests {
 
         let mut request_prefixes: HashMap<String, PathBuf> = HashMap::new();
         request_prefixes.insert("7".to_owned(), PathBuf::from("/"));
-        let request = new_create_sandbox("irrelevant", &[
-            new_mapping("foo", 7, "bar", 9, false),
-        ], request_prefixes);
+        let request = new_create_sandbox(
+            "irrelevant",
+            &[new_mapping("foo", 7, "bar", 9, false)],
+            request_prefixes,
+        );
 
         let err = prefixes.register(&request).unwrap_err();
         assert_eq!("Prefix 9 does not exist", format!("{}", err));
@@ -536,7 +593,9 @@ mod tests {
     #[test]
     fn test_prefixes_destroy_sandbox() {
         let mut prefixes = Prefixes::new();
-        let subset = prefixes.register(&Request::DestroySandbox("foo".to_owned())).unwrap();
+        let subset = prefixes
+            .register(&Request::DestroySandbox("foo".to_owned()))
+            .unwrap();
         assert_eq!(1, prefixes.data.len());
         assert_eq!(&PathBuf::from(""), prefixes.data.get(&0).unwrap());
         assert!(subset.data.is_empty());
@@ -548,15 +607,18 @@ mod tests {
 
         assert_eq!(
             "Identifier cannot be empty",
-            format!("{}", validate_id(&"").unwrap_err()));
+            format!("{}", validate_id(&"").unwrap_err())
+        );
 
         assert_eq!(
             "Identifier /abs is not a basename",
-            format!("{}", validate_id(&"/abs").unwrap_err()));
+            format!("{}", validate_id(&"/abs").unwrap_err())
+        );
 
         assert_eq!(
             "Identifier a/b is not a basename",
-            format!("{}", validate_id(&"a/b").unwrap_err()));
+            format!("{}", validate_id(&"a/b").unwrap_err())
+        );
     }
 
     #[test]
@@ -566,15 +628,31 @@ mod tests {
 
         assert_eq!(
             "/no/trailing/slash",
-            make_path(&"no", &"/trailing/slash//").unwrap().to_str().unwrap());
+            make_path(&"no", &"/trailing/slash//")
+                .unwrap()
+                .to_str()
+                .unwrap()
+        );
 
         assert_eq!(
-            format!("{}", MappingError::PathNotAbsolute { path: PathBuf::from("") }),
-            format!("{}", make_path(&"empty", &"").unwrap_err()));
+            format!(
+                "{}",
+                MappingError::PathNotAbsolute {
+                    path: PathBuf::from("")
+                }
+            ),
+            format!("{}", make_path(&"empty", &"").unwrap_err())
+        );
 
         assert_eq!(
-            format!("{}", MappingError::PathNotAbsolute { path: PathBuf::from("sub/path") }),
-            format!("{}", make_path(&"a", &"sub/path").unwrap_err()));
+            format!(
+                "{}",
+                MappingError::PathNotAbsolute {
+                    path: PathBuf::from("sub/path")
+                }
+            ),
+            format!("{}", make_path(&"a", &"sub/path").unwrap_err())
+        );
     }
 
     /// A reconfigurable file system that tracks map and unmap operations.
@@ -598,8 +676,11 @@ mod tests {
         fn create_sandbox(&self, id: &str, mappings: &[Mapping]) -> Fallible<()> {
             for mapping in mappings {
                 let path = make_path(id, &mapping.path).unwrap();
-                self.log.lock().unwrap().push(
-                    format!("map {} -> {}", path.display(), mapping.underlying_path.display()));
+                self.log.lock().unwrap().push(format!(
+                    "map {} -> {}",
+                    path.display(),
+                    mapping.underlying_path.display()
+                ));
             }
             Ok(())
         }
@@ -617,14 +698,14 @@ mod tests {
     #[derive(Debug)]
     struct FuzzyResponse<'a>(&'a Response);
 
-    impl <'a> From<&'a Response> for FuzzyResponse<'a> {
+    impl<'a> From<&'a Response> for FuzzyResponse<'a> {
         /// Constructs a new `FuzzyResponse` adapter from a `Response`.
         fn from(response: &'a Response) -> Self {
             Self(response)
         }
     }
 
-    impl <'a> PartialEq<Response> for FuzzyResponse<'a> {
+    impl<'a> PartialEq<Response> for FuzzyResponse<'a> {
         /// Checks if the `FuzzyResponse` matches a given `Response`.
         ///
         /// The two are considered equivalent if the pattern provided in the `FuzzyResponse`'s
@@ -643,8 +724,11 @@ mod tests {
     ///
     /// Returns the result of `run_loop` (be it successful or failure) *after* all other conditions
     /// have been checked.
-    fn do_run_loop_raw_test(requests: &str, exp_responses: &[Response], exp_log: &[String])
-        -> Fallible<()> {
+    fn do_run_loop_raw_test(
+        requests: &str,
+        exp_responses: &[Response],
+        exp_log: &[String],
+    ) -> Fallible<()> {
         let fs: MockFS = Default::default();
 
         let reader = io::BufReader::new(requests.as_bytes());
@@ -668,14 +752,19 @@ mod tests {
             responses.insert(response.id.clone(), response);
         }
 
-        let exp_responses: HashMap<Option<String>, FuzzyResponse> =
-            exp_responses.iter().map(|v| (v.id.clone(), FuzzyResponse::from(v))).collect();
+        let exp_responses: HashMap<Option<String>, FuzzyResponse> = exp_responses
+            .iter()
+            .map(|v| (v.id.clone(), FuzzyResponse::from(v)))
+            .collect();
         assert_eq!(exp_responses.len(), responses.len());
         for response in responses {
             assert_eq!(
-                exp_responses.get(&response.0).unwrap_or_else(
-                    || panic!("No expected response id={:?}, error={:?}", response.0, response.1)),
-                &response.1);
+                exp_responses.get(&response.0).unwrap_or_else(|| panic!(
+                    "No expected response id={:?}, error={:?}",
+                    response.0, response.1
+                )),
+                &response.1
+            );
         }
         assert_eq!(exp_log, fs.get_log().as_slice());
 
@@ -703,29 +792,47 @@ mod tests {
 
     #[test]
     fn test_run_loop_one() {
-        let requests: &[Request] = &[
-            new_create_sandbox("foo", &[new_mapping("/bar", 0, "/bin", 0, false)], HashMap::new()),
-        ];
-        let exp_responses = &[
-            Response{ id: Some("foo".to_owned()), error: None },
-        ];
-        let exp_log = &[
-            String::from("map /foo/bar -> /bin"),
-        ];
+        let requests: &[Request] = &[new_create_sandbox(
+            "foo",
+            &[new_mapping("/bar", 0, "/bin", 0, false)],
+            HashMap::new(),
+        )];
+        let exp_responses = &[Response {
+            id: Some("foo".to_owned()),
+            error: None,
+        }];
+        let exp_log = &[String::from("map /foo/bar -> /bin")];
         do_run_loop_test(requests, exp_responses, exp_log);
     }
 
     #[test]
     fn test_run_loop_many() {
         let requests: &[Request] = &[
-            new_create_sandbox("foo", &[new_mapping("/bar", 0, "/bin", 0, false)], HashMap::new()),
+            new_create_sandbox(
+                "foo",
+                &[new_mapping("/bar", 0, "/bin", 0, false)],
+                HashMap::new(),
+            ),
             new_destroy_sandbox("a"),
-            new_create_sandbox("baz", &[new_mapping("/z", 0, "/b", 0, false)], HashMap::new()),
+            new_create_sandbox(
+                "baz",
+                &[new_mapping("/z", 0, "/b", 0, false)],
+                HashMap::new(),
+            ),
         ];
         let exp_responses = &[
-            Response{ id: Some("foo".to_owned()), error: None },
-            Response{ id: Some("a".to_owned()), error: None },
-            Response{ id: Some("baz".to_owned()), error: None },
+            Response {
+                id: Some("foo".to_owned()),
+                error: None,
+            },
+            Response {
+                id: Some("a".to_owned()),
+                error: None,
+            },
+            Response {
+                id: Some("baz".to_owned()),
+                error: None,
+            },
         ];
         let exp_log = &[
             String::from("map /foo/bar -> /bin"),
@@ -738,15 +845,25 @@ mod tests {
     #[test]
     fn test_run_loop_roots() {
         let requests: &[Request] = &[
-            new_create_sandbox("sandbox", &[
-                new_mapping("/", 0, "/the-root", 0, false),
-                new_mapping("/foo/bar", 0, "/bin", 0, false),
-            ], HashMap::new()),
+            new_create_sandbox(
+                "sandbox",
+                &[
+                    new_mapping("/", 0, "/the-root", 0, false),
+                    new_mapping("/foo/bar", 0, "/bin", 0, false),
+                ],
+                HashMap::new(),
+            ),
             new_destroy_sandbox("somewhere-else"),
         ];
         let exp_responses = &[
-            Response{ id: Some("sandbox".to_owned()), error: None },
-            Response{ id: Some("somewhere-else".to_owned()), error: None },
+            Response {
+                id: Some("sandbox".to_owned()),
+                error: None,
+            },
+            Response {
+                id: Some("somewhere-else".to_owned()),
+                error: None,
+            },
         ];
         let exp_log = &[
             String::from("map /sandbox -> /the-root"),
@@ -767,9 +884,18 @@ mod tests {
             new_create_sandbox("a", &[new_mapping("z", 1, "b", 1, false)], HashMap::new()),
         ];
         let exp_responses = &[
-            Response{ id: Some("a".to_owned()), error: None },
-            Response{ id: Some("a".to_owned()), error: Some("\"bar\" is not absolute".to_owned()) },
-            Response{ id: Some("a".to_owned()), error: None },
+            Response {
+                id: Some("a".to_owned()),
+                error: None,
+            },
+            Response {
+                id: Some("a".to_owned()),
+                error: Some("\"bar\" is not absolute".to_owned()),
+            },
+            Response {
+                id: Some("a".to_owned()),
+                error: None,
+            },
         ];
         let exp_log = &[
             String::from("map /a/foo -> /b"),
@@ -788,18 +914,32 @@ mod tests {
         prefixes2.insert("1".to_owned(), PathBuf::from("/"));
         prefixes2.insert("0".to_owned(), PathBuf::from(""));
         let requests: &[Request] = &[
-            new_create_sandbox("sandbox1", &[
-                new_mapping("", 1, "relative/dir", 2, false),
-                new_mapping("/abs/first", 0, "/abs/second", 0, false),
-            ], prefixes1),
-            new_create_sandbox("sandbox2", &[
-                new_mapping("a/b/c", 2, "z", 1, false),
-                new_mapping("flat", 2, "x/y", 3, false),
-            ], prefixes2),
+            new_create_sandbox(
+                "sandbox1",
+                &[
+                    new_mapping("", 1, "relative/dir", 2, false),
+                    new_mapping("/abs/first", 0, "/abs/second", 0, false),
+                ],
+                prefixes1,
+            ),
+            new_create_sandbox(
+                "sandbox2",
+                &[
+                    new_mapping("a/b/c", 2, "z", 1, false),
+                    new_mapping("flat", 2, "x/y", 3, false),
+                ],
+                prefixes2,
+            ),
         ];
         let exp_responses = &[
-            Response{ id: Some("sandbox1".to_owned()), error: None },
-            Response{ id: Some("sandbox2".to_owned()), error: None },
+            Response {
+                id: Some("sandbox1".to_owned()),
+                error: None,
+            },
+            Response {
+                id: Some("sandbox2".to_owned()),
+                error: None,
+            },
         ];
         let exp_log = &[
             String::from("map /sandbox1 -> /some/dir/relative/dir"),
@@ -821,14 +961,22 @@ mod tests {
             new_create_sandbox("d", &[new_mapping("y", 1, "", 0, false)], HashMap::new()),
         ];
         let exp_responses = &[
-            Response{
-                id: Some("a".to_owned()), error: Some("Suffix /y must be relative".to_owned()) },
-            Response{
-                id: Some("b".to_owned()), error: Some("path \"y\" is not absolute".to_owned()) },
-            Response{
-                id: Some("c".to_owned()), error: Some("Prefix 2 does not exist".to_owned()) },
-            Response{
-                id: Some("d".to_owned()), error: Some("path \"\" is not absolute".to_owned()) },
+            Response {
+                id: Some("a".to_owned()),
+                error: Some("Suffix /y must be relative".to_owned()),
+            },
+            Response {
+                id: Some("b".to_owned()),
+                error: Some("path \"y\" is not absolute".to_owned()),
+            },
+            Response {
+                id: Some("c".to_owned()),
+                error: Some("Prefix 2 does not exist".to_owned()),
+            },
+            Response {
+                id: Some("d".to_owned()),
+                error: Some("path \"\" is not absolute".to_owned()),
+            },
         ];
         let exp_log = &[];
         do_run_loop_test(requests, exp_responses, exp_log);
@@ -837,9 +985,10 @@ mod tests {
     #[test]
     fn test_run_loop_fatal_syntax_error_due_to_empty_request() {
         let requests = r#"{}"#;
-        let exp_responses = &[
-            Response{ id: None, error: Some("expected value".to_string()) },
-        ];
+        let exp_responses = &[Response {
+            id: None,
+            error: Some("expected value".to_string()),
+        }];
         do_run_loop_raw_test(&requests, exp_responses, &[]).unwrap_err();
     }
 
@@ -863,9 +1012,10 @@ mod tests {
                 "DestroySandbox": "bar"
             }
         "#;
-        let exp_responses = &[
-            Response{ id: None, error: Some("expected value".to_string()) },
-        ];
+        let exp_responses = &[Response {
+            id: None,
+            error: Some("expected value".to_string()),
+        }];
         do_run_loop_raw_test(&requests, exp_responses, &[]).unwrap_err();
     }
 
@@ -880,12 +1030,16 @@ mod tests {
             {"DestroySandbox": "third"}
         "#;
         let exp_responses = &[
-            Response{ id: Some("first".to_owned()), error: None },
-            Response{ id: None, error: Some("missing field".to_string()) },
+            Response {
+                id: Some("first".to_owned()),
+                error: None,
+            },
+            Response {
+                id: None,
+                error: Some("missing field".to_string()),
+            },
         ];
-        let exp_log = &[
-            String::from("unmap /first"),
-        ];
+        let exp_log = &[String::from("unmap /first")];
         do_run_loop_raw_test(&requests, exp_responses, exp_log).unwrap_err();
     }
 }
