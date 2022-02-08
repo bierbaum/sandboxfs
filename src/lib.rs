@@ -708,9 +708,15 @@ impl fuser::Filesystem for SandboxFS {
 
     fn symlink(&mut self, req: &fuser::Request, parent: u64, name: &OsStr, link: &Path,
         reply: fuser::ReplyEntry) {
+
         match self.symlink2(req, parent, name, link) {
-            Ok(attr) => reply.entry(&self.ttl, &attr, IdGenerator::GENERATION),
-            Err(e) => reply.error(e.errno_as_i32()),
+            Ok(attr) => {
+                reply.entry(&self.ttl, &attr, IdGenerator::GENERATION)
+            },
+            Err(e) => {
+                log::error!("symlink resulted in error: {}", e);
+                reply.error(e.errno_as_i32())
+            },
         }
     }
 
