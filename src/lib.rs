@@ -16,29 +16,37 @@
 
 // Keep these in sync with the list of checks in main.rs.
 #![warn(bad_style, missing_docs)]
-#![warn(unused, unused_extern_crates, unused_import_braces, unused_qualifications)]
+#![warn(
+    unused,
+    unused_extern_crates,
+    unused_import_braces,
+    unused_qualifications
+)]
 #![warn(unsafe_code)]
-
 // We construct complex structures in multiple places, and allowing for redundant field names
 // increases readability.
 #![allow(clippy::redundant_field_names)]
-
 // For portability reasons, we need to be able to cast integer values to system-level opaque
 // types such as "mode_t".  Because we don't know the size of those integers on the platform we
 // are building for, sometimes the casts do widen the values but other times they are no-ops.
 #![allow(clippy::useless_conversion)]
 
-#[cfg(feature = "profiling")] extern crate cpuprofiler;
-#[macro_use] extern crate failure;
+#[cfg(feature = "profiling")]
+extern crate cpuprofiler;
+#[macro_use]
+extern crate failure;
 extern crate fuse;
-#[macro_use] extern crate log;
+#[macro_use]
+extern crate log;
 extern crate nix;
 extern crate serde_derive;
 extern crate signal_hook;
-#[cfg(test)] extern crate tempfile;
-#[cfg(test)] extern crate users;
+#[cfg(test)]
+extern crate tempfile;
 extern crate threadpool;
 extern crate time;
+#[cfg(test)]
+extern crate users;
 extern crate xattr;
 
 use failure::{Fallible, ResultExt};
@@ -51,8 +59,8 @@ use std::fs;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 use std::result::Result;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use time::Timespec;
 
@@ -61,7 +69,8 @@ mod errors;
 mod nodes;
 mod profiling;
 mod reconfig;
-#[cfg(test)] mod testutils;
+#[cfg(test)]
+mod testutils;
 
 pub use errors::{flatten_causes, KernelError, MappingError};
 pub use nodes::{ArcCache, NoCache, PathCache};
@@ -82,14 +91,21 @@ impl Mapping {
     /// `path` is the inside the sandbox's mount point where the `underlying_path` is exposed.
     /// Both must be absolute paths.  `path` must also not contain dot-dot components, though it
     /// may contain dot components and repeated path separators.
-    pub fn from_parts(path: PathBuf, underlying_path: PathBuf, writable: bool)
-        -> Result<Self, MappingError> {
+    pub fn from_parts(
+        path: PathBuf,
+        underlying_path: PathBuf,
+        writable: bool,
+    ) -> Result<Self, MappingError> {
         if !path.is_absolute() {
             return Err(MappingError::PathNotAbsolute { path });
         }
         let is_normalized = {
             let mut components = path.components();
-            assert_eq!(components.next(), Some(Component::RootDir), "Path expected to be absolute");
+            assert_eq!(
+                components.next(),
+                Some(Component::RootDir),
+                "Path expected to be absolute"
+            );
             let is_not_normal: fn(&Component) -> bool = |c| match c {
                 Component::CurDir => panic!("Dot components ought to have been skipped"),
                 Component::Normal(_) => false,
@@ -99,14 +115,20 @@ impl Mapping {
             components.find(is_not_normal).is_none()
         };
         if !is_normalized {
-            return Err(MappingError::PathNotNormalized{ path });
+            return Err(MappingError::PathNotNormalized { path });
         }
 
         if !underlying_path.is_absolute() {
-            return Err(MappingError::PathNotAbsolute { path: underlying_path });
+            return Err(MappingError::PathNotAbsolute {
+                path: underlying_path,
+            });
         }
 
-        Ok(Mapping { path, underlying_path, writable })
+        Ok(Mapping {
+            path,
+            underlying_path,
+            writable,
+        })
     }
 
     /// Returns true if this is a mapping for the root directory.
@@ -117,8 +139,18 @@ impl Mapping {
 
 impl fmt::Display for Mapping {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let writability = if self.writable { "read/write" } else { "read-only" };
-        write!(f, "{} -> {} ({})", self.path.display(), self.underlying_path.display(), writability)
+        let writability = if self.writable {
+            "read/write"
+        } else {
+            "read-only"
+        };
+        write!(
+            f,
+            "{} -> {} ({})",
+            self.path.display(),
+            self.underlying_path.display(),
+            writability
+        )
     }
 }
 
@@ -137,7 +169,9 @@ impl IdGenerator {
 
     /// Constructs a new generator that starts at the given value.
     fn new(start_value: u64) -> Self {
-        IdGenerator { last_id: AtomicUsize::new(start_value as usize) }
+        IdGenerator {
+            last_id: AtomicUsize::new(start_value as usize),
+        }
     }
 
     /// Obtains a new identifier.
@@ -202,9 +236,15 @@ struct ReconfigurableSandboxFS {
 // one) so it's not clear to me that that's going to be faster; need to measure.
 fn split_abs_path(path: &Path) -> Vec<Component> {
     let mut components = path.components();
-    let root = components.next().expect("Should have been called on an absolute path only");
-    debug_assert_eq!(Component::RootDir, root,
-        "Paths in mappings are always absolute but got {:?}", path);
+    let root = components
+        .next()
+        .expect("Should have been called on an absolute path only");
+    debug_assert_eq!(
+        Component::RootDir,
+        root,
+        "Paths in mappings are always absolute but got {:?}",
+        path
+    );
     components.collect::<Vec<_>>()
 }
 
@@ -212,20 +252,33 @@ fn split_abs_path(path: &Path) -> Vec<Component> {
 ///
 /// This code is shared by the application of `--mapping` flags and by the application of new
 /// mappings as part of a reconfiguration operation.  We want both processes to behave identically.
-fn apply_mapping(mapping: &Mapping, root: &dyn nodes::Node, ids: &IdGenerator,
-    cache: &dyn nodes::Cache) -> Fallible<nodes::ArcNode> {
+fn apply_mapping(
+    mapping: &Mapping,
+    root: &dyn nodes::Node,
+    ids: &IdGenerator,
+    cache: &dyn nodes::Cache,
+) -> Fallible<nodes::ArcNode> {
     let components = split_abs_path(&mapping.path);
 
     // The input `root` node is an existing node that corresponds to the root.  If we don't find
     // any path components in the given mapping, it means we are trying to remap that same node.
     ensure!(!components.is_empty(), "Root can be mapped at most once");
 
-    root.map(&components, &mapping.underlying_path, mapping.writable, &ids, cache)
+    root.map(
+        &components,
+        &mapping.underlying_path,
+        mapping.writable,
+        &ids,
+        cache,
+    )
 }
 
 /// Creates the initial node hierarchy based on a collection of `mappings`.
-fn create_root(mappings: &[Mapping], ids: &IdGenerator, cache: &dyn nodes::Cache)
-    -> Fallible<nodes::ArcNode> {
+fn create_root(
+    mappings: &[Mapping],
+    ids: &IdGenerator,
+    cache: &dyn nodes::Cache,
+) -> Fallible<nodes::ArcNode> {
     let now = time::get_time();
 
     let (root, rest) = if mappings.is_empty() {
@@ -233,13 +286,26 @@ fn create_root(mappings: &[Mapping], ids: &IdGenerator, cache: &dyn nodes::Cache
     } else {
         let first = &mappings[0];
         if first.is_root() {
-            let fs_attr = fs::symlink_metadata(&first.underlying_path)
-                .with_context(|_| format!("Failed to map root: stat failed for {:?}",
-                    &first.underlying_path))?;
-            ensure!(fs_attr.is_dir(), "Failed to map root: {:?} is not a directory",
-                    &first.underlying_path);
-            (nodes::Dir::new_mapped(ids.next(), &first.underlying_path, &fs_attr, first.writable),
-                &mappings[1..])
+            let fs_attr = fs::symlink_metadata(&first.underlying_path).with_context(|_| {
+                format!(
+                    "Failed to map root: stat failed for {:?}",
+                    &first.underlying_path
+                )
+            })?;
+            ensure!(
+                fs_attr.is_dir(),
+                "Failed to map root: {:?} is not a directory",
+                &first.underlying_path
+            );
+            (
+                nodes::Dir::new_mapped(
+                    ids.next(),
+                    &first.underlying_path,
+                    &fs_attr,
+                    first.writable,
+                ),
+                &mappings[1..],
+            )
         } else {
             (nodes::Dir::new_empty(ids.next(), None, now), mappings)
         }
@@ -255,8 +321,12 @@ fn create_root(mappings: &[Mapping], ids: &IdGenerator, cache: &dyn nodes::Cache
 
 impl SandboxFS {
     /// Creates a new `SandboxFS` instance.
-    fn create(mappings: &[Mapping], ttl: Timespec, cache: ArcCache, xattrs: bool)
-        -> Fallible<SandboxFS> {
+    fn create(
+        mappings: &[Mapping],
+        ttl: Timespec,
+        cache: ArcCache,
+        xattrs: bool,
+    ) -> Fallible<SandboxFS> {
         let ids = IdGenerator::new(fuse::FUSE_ROOT_ID);
 
         let mut nodes = HashMap::new();
@@ -277,7 +347,9 @@ impl SandboxFS {
     /// Creates a reconfigurable view of this file system, to safely pass across threads.
     fn reconfigurable(&mut self) -> ReconfigurableSandboxFS {
         ReconfigurableSandboxFS {
-            root: self.find_node(fuse::FUSE_ROOT_ID).expect("Root node must always exist"),
+            root: self
+                .find_node(fuse::FUSE_ROOT_ID)
+                .expect("Root node must always exist"),
             ids: self.ids.clone(),
             nodes: self.nodes.clone(),
             cache: self.cache.clone(),
@@ -311,7 +383,10 @@ impl SandboxFS {
     /// numbers we have previously told it about.
     fn find_handle(&mut self, fh: u64) -> nodes::ArcHandle {
         let handles = self.handles.lock().unwrap();
-        handles.get(&fh).expect("Kernel requested unknown handle").clone()
+        handles
+            .get(&fh)
+            .expect("Kernel requested unknown handle")
+            .clone()
     }
 
     /// Tracks a new file handle and assigns an identifier to it.
@@ -330,11 +405,24 @@ impl SandboxFS {
     }
 
     /// Same as `create` but leaves the handling of the `fuse::Reply` to the caller.
-    fn create2(&mut self, req: &fuse::Request, parent: u64, name: &OsStr, mode: u32, flags: u32)
-        -> nodes::NodeResult<(fuse::FileAttr, u64)> {
+    fn create2(
+        &mut self,
+        req: &fuse::Request,
+        parent: u64,
+        name: &OsStr,
+        mode: u32,
+        flags: u32,
+    ) -> nodes::NodeResult<(fuse::FileAttr, u64)> {
         let dir_node = self.find_writable_node(parent)?;
         let (node, handle, attr) = dir_node.create(
-            name, nix_uid(req), nix_gid(req), mode, flags, &self.ids, self.cache.as_ref())?;
+            name,
+            nix_uid(req),
+            nix_gid(req),
+            mode,
+            flags,
+            &self.ids,
+            self.cache.as_ref(),
+        )?;
         self.insert_node(node);
         let fh = self.insert_handle(handle);
         Ok((attr, fh))
@@ -358,22 +446,46 @@ impl SandboxFS {
     }
 
     /// Same as `mkdir` but leaves the handling of the `fuse::Reply` to the caller.
-    fn mkdir2(&mut self, req: &fuse::Request, parent: u64, name: &OsStr, mode: u32)
-        -> nodes::NodeResult<fuse::FileAttr> {
+    fn mkdir2(
+        &mut self,
+        req: &fuse::Request,
+        parent: u64,
+        name: &OsStr,
+        mode: u32,
+    ) -> nodes::NodeResult<fuse::FileAttr> {
         let dir_node = self.find_writable_node(parent)?;
         let (node, attr) = dir_node.mkdir(
-            name, nix_uid(req), nix_gid(req), mode, &self.ids, self.cache.as_ref())?;
+            name,
+            nix_uid(req),
+            nix_gid(req),
+            mode,
+            &self.ids,
+            self.cache.as_ref(),
+        )?;
         self.insert_node(node);
         Ok(attr)
     }
 
     /// Same as `mknod` but leaves the handling of the `fuse::Reply` to the caller.
-    fn mknod2(&mut self, req: &fuse::Request, parent: u64, name: &OsStr, mode: u32, rdev: u32)
-        -> nodes::NodeResult<fuse::FileAttr> {
+    fn mknod2(
+        &mut self,
+        req: &fuse::Request,
+        parent: u64,
+        name: &OsStr,
+        mode: u32,
+        rdev: u32,
+    ) -> nodes::NodeResult<fuse::FileAttr> {
         let dir_node = self.find_writable_node(parent)?;
 
         let (node, attr) = dir_node.mknod(
-            name, nix_uid(req), nix_gid(req), mode, rdev, &self.ids, self.cache.as_ref())?;
+            name,
+            nix_uid(req),
+            nix_gid(req),
+            mode,
+            rdev,
+            &self.ids,
+            self.cache.as_ref(),
+        )?;
         self.insert_node(node);
         Ok(attr)
     }
@@ -395,12 +507,19 @@ impl SandboxFS {
     /// caller.
     fn release2(&mut self, fh: u64) {
         let mut handles = self.handles.lock().unwrap();
-        handles.remove(&fh).expect("Kernel tried to release an unknown handle");
+        handles
+            .remove(&fh)
+            .expect("Kernel tried to release an unknown handle");
     }
 
     /// Same as `rename` but leaves the handling of the `fuse::Reply` to the caller.
-    fn rename2(&mut self, parent: u64, name: &OsStr, new_parent: u64, new_name: &OsStr)
-        -> nodes::NodeResult<()> {
+    fn rename2(
+        &mut self,
+        parent: u64,
+        name: &OsStr,
+        new_parent: u64,
+        new_name: &OsStr,
+    ) -> nodes::NodeResult<()> {
         let dir_node = self.find_writable_node(parent)?;
         if parent == new_parent {
             dir_node.rename(name, new_name, self.cache.as_ref())
@@ -418,9 +537,16 @@ impl SandboxFS {
 
     /// Same as `setattr` but leaves the handling of the `fuse::Reply` to the caller.
     #[allow(clippy::too_many_arguments)]
-    fn setattr2(&mut self, inode: u64, mode: Option<u32>, uid: Option<u32>,
-        gid: Option<u32>, size: Option<u64>, atime: Option<Timespec>, mtime: Option<Timespec>)
-        -> nodes::NodeResult<fuse::FileAttr> {
+    fn setattr2(
+        &mut self,
+        inode: u64,
+        mode: Option<u32>,
+        uid: Option<u32>,
+        gid: Option<u32>,
+        size: Option<u64>,
+        atime: Option<Timespec>,
+        mtime: Option<Timespec>,
+    ) -> nodes::NodeResult<fuse::FileAttr> {
         let node = self.find_writable_node(inode)?;
         let values = nodes::AttrDelta {
             mode: mode.map(|m| sys::stat::Mode::from_bits_truncate(m as sys::stat::mode_t)),
@@ -434,11 +560,22 @@ impl SandboxFS {
     }
 
     /// Same as `symlink` but leaves the handling of the `fuse::Reply` to the caller.
-    fn symlink2(&mut self, req: &fuse::Request, parent: u64, name: &OsStr, link: &Path)
-        -> nodes::NodeResult<fuse::FileAttr> {
+    fn symlink2(
+        &mut self,
+        req: &fuse::Request,
+        parent: u64,
+        name: &OsStr,
+        link: &Path,
+    ) -> nodes::NodeResult<fuse::FileAttr> {
         let dir_node = self.find_writable_node(parent)?;
         let (node, attr) = dir_node.symlink(
-            name, link, nix_uid(req), nix_gid(req), &self.ids, self.cache.as_ref())?;
+            name,
+            link,
+            nix_uid(req),
+            nix_gid(req),
+            &self.ids,
+            self.cache.as_ref(),
+        )?;
         self.insert_node(node);
         Ok(attr)
     }
@@ -470,7 +607,7 @@ impl SandboxFS {
                 compile_error!("Don't know what error to return on a missing getxattr");
 
                 Err(KernelError::from_errno(code))
-            },
+            }
             Ok(Some(value)) => Ok(value),
             Err(e) => Err(e),
         }
@@ -495,32 +632,44 @@ impl SandboxFS {
 /// `delete` lambda should match this creation and allow the deletion of the file, and this is used
 /// as a cleanup function when the ownership cannot be successfully changed.
 fn create_as<T, E: From<Errno> + fmt::Display, P: AsRef<Path>>(
-    path: &P, uid: unistd::Uid, gid: unistd::Gid,
+    path: &P,
+    uid: unistd::Uid,
+    gid: unistd::Gid,
     create: impl Fn(&P) -> Result<T, E>,
-    delete: impl Fn(&P) -> Result<(), E>)
-    -> Result<T, E> {
-
+    delete: impl Fn(&P) -> Result<(), E>,
+) -> Result<T, E> {
     let result = create(path)?;
 
     unistd::fchownat(
-        None, path.as_ref(), Some(uid), Some(gid), unistd::FchownatFlags::NoFollowSymlink)
-        .map_err(|e| {
-            let chown_errno = match e {
-                nix::Error::Sys(chown_errno) => chown_errno,
-                unknown_chown_error => {
-                    warn!("fchownat({}) failed with unexpected non-errno error: {:?}",
-                          path.as_ref().display(), unknown_chown_error);
-                    Errno::EIO
-                },
-            };
-
-            if let Err(e) = delete(path) {
-                warn!("Cannot delete created file {} after failing to change ownership: {}",
-                      path.as_ref().display(), e);
+        None,
+        path.as_ref(),
+        Some(uid),
+        Some(gid),
+        unistd::FchownatFlags::NoFollowSymlink,
+    )
+    .map_err(|e| {
+        let chown_errno = match e {
+            nix::Error::Sys(chown_errno) => chown_errno,
+            unknown_chown_error => {
+                warn!(
+                    "fchownat({}) failed with unexpected non-errno error: {:?}",
+                    path.as_ref().display(),
+                    unknown_chown_error
+                );
+                Errno::EIO
             }
+        };
 
-            chown_errno
-        })?;
+        if let Err(e) = delete(path) {
+            warn!(
+                "Cannot delete created file {} after failing to change ownership: {}",
+                path.as_ref().display(),
+                e
+            );
+        }
+
+        chown_errno
+    })?;
 
     Ok(result)
 }
@@ -574,8 +723,15 @@ fn reply_xattr(size: u32, value: &[u8], reply: fuse::ReplyXattr) {
 }
 
 impl fuse::Filesystem for SandboxFS {
-    fn create(&mut self, req: &fuse::Request, parent: u64, name: &OsStr, mode: u32, flags: u32,
-        reply: fuse::ReplyCreate) {
+    fn create(
+        &mut self,
+        req: &fuse::Request,
+        parent: u64,
+        name: &OsStr,
+        mode: u32,
+        flags: u32,
+        reply: fuse::ReplyCreate,
+    ) {
         match self.create2(req, parent, name, mode, flags) {
             Ok((attr, fh)) => reply.created(&self.ttl, &attr, IdGenerator::GENERATION, fh, 0),
             Err(e) => reply.error(e.errno_as_i32()),
@@ -589,8 +745,14 @@ impl fuse::Filesystem for SandboxFS {
         }
     }
 
-    fn link(&mut self, _req: &fuse::Request, _inode: u64, _newparent: u64, _newname: &OsStr,
-        reply: fuse::ReplyEntry) {
+    fn link(
+        &mut self,
+        _req: &fuse::Request,
+        _inode: u64,
+        _newparent: u64,
+        _newname: &OsStr,
+        reply: fuse::ReplyEntry,
+    ) {
         // We don't support hardlinks at this point.
         reply.error(Errno::EPERM as i32);
     }
@@ -602,16 +764,29 @@ impl fuse::Filesystem for SandboxFS {
         }
     }
 
-    fn mkdir(&mut self, req: &fuse::Request, parent: u64, name: &OsStr, mode: u32,
-        reply: fuse::ReplyEntry) {
+    fn mkdir(
+        &mut self,
+        req: &fuse::Request,
+        parent: u64,
+        name: &OsStr,
+        mode: u32,
+        reply: fuse::ReplyEntry,
+    ) {
         match self.mkdir2(req, parent, name, mode) {
             Ok(attr) => reply.entry(&self.ttl, &attr, IdGenerator::GENERATION),
             Err(e) => reply.error(e.errno_as_i32()),
         }
     }
 
-    fn mknod(&mut self, req: &fuse::Request, parent: u64, name: &OsStr, mode: u32, rdev: u32,
-        reply: fuse::ReplyEntry) {
+    fn mknod(
+        &mut self,
+        req: &fuse::Request,
+        parent: u64,
+        name: &OsStr,
+        mode: u32,
+        rdev: u32,
+        reply: fuse::ReplyEntry,
+    ) {
         match self.mknod2(req, parent, name, mode, rdev) {
             Ok(attr) => reply.entry(&self.ttl, &attr, IdGenerator::GENERATION),
             Err(e) => reply.error(e.errno_as_i32()),
@@ -632,8 +807,15 @@ impl fuse::Filesystem for SandboxFS {
         }
     }
 
-    fn read(&mut self, _req: &fuse::Request, _inode: u64, fh: u64, offset: i64, size: u32,
-        reply: fuse::ReplyData) {
+    fn read(
+        &mut self,
+        _req: &fuse::Request,
+        _inode: u64,
+        fh: u64,
+        offset: i64,
+        size: u32,
+        reply: fuse::ReplyData,
+    ) {
         let handle = self.find_handle(fh);
 
         match handle.read(offset, size) {
@@ -642,8 +824,14 @@ impl fuse::Filesystem for SandboxFS {
         }
     }
 
-    fn readdir(&mut self, _req: &fuse::Request, _inode: u64, handle: u64, offset: i64,
-               mut reply: fuse::ReplyDirectory) {
+    fn readdir(
+        &mut self,
+        _req: &fuse::Request,
+        _inode: u64,
+        handle: u64,
+        offset: i64,
+        mut reply: fuse::ReplyDirectory,
+    ) {
         let handle = self.find_handle(handle);
         match handle.readdir(&self.ids, self.cache.as_ref(), offset, &mut reply) {
             Ok(()) => reply.ok(),
@@ -658,20 +846,41 @@ impl fuse::Filesystem for SandboxFS {
         }
     }
 
-    fn release(&mut self, _req: &fuse::Request, _inode: u64, fh: u64, _flags: u32, _lock_owner: u64,
-        _flush: bool, reply: fuse::ReplyEmpty) {
+    fn release(
+        &mut self,
+        _req: &fuse::Request,
+        _inode: u64,
+        fh: u64,
+        _flags: u32,
+        _lock_owner: u64,
+        _flush: bool,
+        reply: fuse::ReplyEmpty,
+    ) {
         self.release2(fh);
         reply.ok();
     }
 
-    fn releasedir(&mut self, _req: &fuse::Request, _inode: u64, fh: u64, _flags: u32,
-        reply: fuse::ReplyEmpty) {
+    fn releasedir(
+        &mut self,
+        _req: &fuse::Request,
+        _inode: u64,
+        fh: u64,
+        _flags: u32,
+        reply: fuse::ReplyEmpty,
+    ) {
         self.release2(fh);
         reply.ok();
     }
 
-    fn rename(&mut self, _req: &fuse::Request, parent: u64, name: &OsStr, new_parent: u64,
-        new_name: &OsStr, reply: fuse::ReplyEmpty) {
+    fn rename(
+        &mut self,
+        _req: &fuse::Request,
+        parent: u64,
+        name: &OsStr,
+        new_parent: u64,
+        new_name: &OsStr,
+        reply: fuse::ReplyEmpty,
+    ) {
         match self.rename2(parent, name, new_parent, new_name) {
             Ok(()) => reply.ok(),
             Err(e) => reply.error(e.errno_as_i32()),
@@ -685,18 +894,37 @@ impl fuse::Filesystem for SandboxFS {
         }
     }
 
-    fn setattr(&mut self, _req: &fuse::Request, inode: u64, mode: Option<u32>, uid: Option<u32>,
-        gid: Option<u32>, size: Option<u64>, atime: Option<Timespec>, mtime: Option<Timespec>,
-        _fh: Option<u64>, _crtime: Option<Timespec>, _chgtime: Option<Timespec>,
-        _bkuptime: Option<Timespec>, _flags: Option<u32>, reply: fuse::ReplyAttr) {
+    fn setattr(
+        &mut self,
+        _req: &fuse::Request,
+        inode: u64,
+        mode: Option<u32>,
+        uid: Option<u32>,
+        gid: Option<u32>,
+        size: Option<u64>,
+        atime: Option<Timespec>,
+        mtime: Option<Timespec>,
+        _fh: Option<u64>,
+        _crtime: Option<Timespec>,
+        _chgtime: Option<Timespec>,
+        _bkuptime: Option<Timespec>,
+        _flags: Option<u32>,
+        reply: fuse::ReplyAttr,
+    ) {
         match self.setattr2(inode, mode, uid, gid, size, atime, mtime) {
             Ok(attr) => reply.attr(&self.ttl, &attr),
             Err(e) => reply.error(e.errno_as_i32()),
         }
     }
 
-    fn symlink(&mut self, req: &fuse::Request, parent: u64, name: &OsStr, link: &Path,
-        reply: fuse::ReplyEntry) {
+    fn symlink(
+        &mut self,
+        req: &fuse::Request,
+        parent: u64,
+        name: &OsStr,
+        link: &Path,
+        reply: fuse::ReplyEntry,
+    ) {
         match self.symlink2(req, parent, name, link) {
             Ok(attr) => reply.entry(&self.ttl, &attr, IdGenerator::GENERATION),
             Err(e) => reply.error(e.errno_as_i32()),
@@ -710,8 +938,16 @@ impl fuse::Filesystem for SandboxFS {
         }
     }
 
-    fn write(&mut self, _req: &fuse::Request, _inode: u64, fh: u64, offset: i64, data: &[u8],
-        _flags: u32, reply: fuse::ReplyWrite) {
+    fn write(
+        &mut self,
+        _req: &fuse::Request,
+        _inode: u64,
+        fh: u64,
+        offset: i64,
+        data: &[u8],
+        _flags: u32,
+        reply: fuse::ReplyWrite,
+    ) {
         let handle = self.find_handle(fh);
 
         match handle.write(offset, data) {
@@ -720,8 +956,16 @@ impl fuse::Filesystem for SandboxFS {
         }
     }
 
-    fn setxattr(&mut self, _req: &fuse::Request<'_>, inode: u64, name: &OsStr, value: &[u8],
-        _flags: u32, _position: u32, reply: fuse::ReplyEmpty) {
+    fn setxattr(
+        &mut self,
+        _req: &fuse::Request<'_>,
+        inode: u64,
+        name: &OsStr,
+        value: &[u8],
+        _flags: u32,
+        _position: u32,
+        reply: fuse::ReplyEmpty,
+    ) {
         if !self.xattrs {
             reply.error(Errno::ENOSYS as i32);
             return;
@@ -733,8 +977,14 @@ impl fuse::Filesystem for SandboxFS {
         }
     }
 
-    fn getxattr(&mut self, _req: &fuse::Request<'_>, inode: u64, name: &OsStr, size: u32,
-        reply: fuse::ReplyXattr) {
+    fn getxattr(
+        &mut self,
+        _req: &fuse::Request<'_>,
+        inode: u64,
+        name: &OsStr,
+        size: u32,
+        reply: fuse::ReplyXattr,
+    ) {
         if !self.xattrs {
             reply.error(Errno::ENOSYS as i32);
             return;
@@ -746,8 +996,13 @@ impl fuse::Filesystem for SandboxFS {
         }
     }
 
-    fn listxattr(&mut self, _req: &fuse::Request<'_>, inode: u64, size: u32,
-        reply: fuse::ReplyXattr) {
+    fn listxattr(
+        &mut self,
+        _req: &fuse::Request<'_>,
+        inode: u64,
+        size: u32,
+        reply: fuse::ReplyXattr,
+    ) {
         if !self.xattrs {
             reply.error(Errno::ENOSYS as i32);
             return;
@@ -761,13 +1016,18 @@ impl fuse::Filesystem for SandboxFS {
                 } else {
                     reply.data(&[]);
                 }
-            },
+            }
             Err(e) => reply.error(e.errno_as_i32()),
         }
     }
 
-    fn removexattr(&mut self, _req: &fuse::Request<'_>, inode: u64, name: &OsStr,
-        reply: fuse::ReplyEmpty) {
+    fn removexattr(
+        &mut self,
+        _req: &fuse::Request<'_>,
+        inode: u64,
+        name: &OsStr,
+        reply: fuse::ReplyEmpty,
+    ) {
         if !self.xattrs {
             reply.error(Errno::ENOSYS as i32);
             return;
@@ -791,13 +1051,21 @@ impl reconfig::ReconfigurableFS for ReconfigurableSandboxFS {
                     let path = reconfig::make_path(id, mapping.path.clone())?;
                     mappings = &mappings[1..];
                     let m = Mapping::from_parts(
-                        path, mapping.underlying_path.clone(), mapping.writable)?;
-                    apply_mapping(&m, self.root.as_ref(), self.ids.as_ref(), self.cache.as_ref())
-                        .with_context(|_| format!("Cannot map '{}'", mapping))?
+                        path,
+                        mapping.underlying_path.clone(),
+                        mapping.writable,
+                    )?;
+                    apply_mapping(
+                        &m,
+                        self.root.as_ref(),
+                        self.ids.as_ref(),
+                        self.cache.as_ref(),
+                    )
+                    .with_context(|_| format!("Cannot map '{}'", mapping))?
                 } else {
                     self.root.find_subdir(OsStr::new(id), self.ids.as_ref())?
                 }
-            },
+            }
             None => self.root.find_subdir(OsStr::new(id), self.ids.as_ref())?,
         };
 
@@ -807,14 +1075,18 @@ impl reconfig::ReconfigurableFS for ReconfigurableSandboxFS {
         // for the top-level directory; what about all intermediate directories for all mappings?
         for mapping in mappings {
             apply_mapping(
-                mapping, root_node.clone().as_ref(), self.ids.as_ref(), self.cache.as_ref())
-                    .with_context(|_| format!("Cannot map '{}'", mapping))?;
+                mapping,
+                root_node.clone().as_ref(),
+                self.ids.as_ref(),
+                self.cache.as_ref(),
+            )
+            .with_context(|_| format!("Cannot map '{}'", mapping))?;
         }
         Ok(())
     }
 
     fn destroy_sandbox(&self, id: &str) -> Fallible<()> {
-        let mut inodes = vec!();
+        let mut inodes = vec![];
         let result = self.root.unmap_subdir(OsStr::new(id), &mut inodes);
 
         let mut nodes = self.nodes.lock().unwrap();
@@ -828,9 +1100,17 @@ impl reconfig::ReconfigurableFS for ReconfigurableSandboxFS {
 
 /// Mounts a new sandboxfs instance on the given `mount_point` and maps all `mappings` within it.
 #[allow(clippy::too_many_arguments)]
-pub fn mount(mount_point: &Path, options: &[&str], mappings: &[Mapping], ttl: Timespec,
-    cache: ArcCache, xattrs: bool, input: fs::File, output: fs::File, threads: usize)
-    -> Fallible<()> {
+pub fn mount(
+    mount_point: &Path,
+    options: &[&str],
+    mappings: &[Mapping],
+    ttl: Timespec,
+    cache: ArcCache,
+    xattrs: bool,
+    input: fs::File,
+    output: fs::File,
+    threads: usize,
+) -> Fallible<()> {
     let mut os_options = options.iter().map(AsRef::as_ref).collect::<Vec<&OsStr>>();
 
     // Delegate permissions checks to the kernel for efficiency and to avoid having to implement
@@ -855,7 +1135,8 @@ pub fn mount(mount_point: &Path, options: &[&str], mappings: &[Mapping], ttl: Ti
         let handler = thread::spawn(move || {
             match reconfig::run_loop(reader, output, threads, &reconfigurable_fs) {
                 Ok(()) => info!(
-                    "Reached end of reconfiguration input; file system mappings are now frozen"),
+                    "Reached end of reconfiguration input; file system mappings are now frozen"
+                ),
                 Err(e) => warn!("Reconfigurations stopped due to internal error: {}", e),
             }
         });
@@ -885,9 +1166,11 @@ mod tests {
     #[test]
     fn test_mapping_new_ok() {
         let mapping = Mapping::from_parts(
-            PathBuf::from("/foo/.///bar"),  // Must be absolute and normalized.
-            PathBuf::from("/bar/./baz/../abc"),  // Must be absolute but needn't be normalized.
-            false).unwrap();
+            PathBuf::from("/foo/.///bar"),      // Must be absolute and normalized.
+            PathBuf::from("/bar/./baz/../abc"), // Must be absolute but needn't be normalized.
+            false,
+        )
+        .unwrap();
         assert_eq!(PathBuf::from("/foo/bar"), mapping.path);
         assert_eq!(PathBuf::from("/bar/baz/../abc"), mapping.underlying_path);
         assert!(!mapping.writable);
@@ -895,44 +1178,75 @@ mod tests {
 
     #[test]
     fn test_mapping_new_path_is_not_absolute() {
-        let err = Mapping::from_parts(
-            PathBuf::from("foo"), PathBuf::from("/bar"), false).unwrap_err();
-        assert_eq!(MappingError::PathNotAbsolute { path: PathBuf::from("foo") }, err);
+        let err =
+            Mapping::from_parts(PathBuf::from("foo"), PathBuf::from("/bar"), false).unwrap_err();
+        assert_eq!(
+            MappingError::PathNotAbsolute {
+                path: PathBuf::from("foo")
+            },
+            err
+        );
     }
 
     #[test]
     fn test_mapping_new_path_is_not_normalized() {
         let trailing_dotdot = PathBuf::from("/foo/..");
         assert_eq!(
-            MappingError::PathNotNormalized { path: trailing_dotdot.clone() },
-            Mapping::from_parts(trailing_dotdot, PathBuf::from("/bar"), false).unwrap_err());
+            MappingError::PathNotNormalized {
+                path: trailing_dotdot.clone()
+            },
+            Mapping::from_parts(trailing_dotdot, PathBuf::from("/bar"), false).unwrap_err()
+        );
 
         let intermediate_dotdot = PathBuf::from("/foo/../bar/baz");
         assert_eq!(
-            MappingError::PathNotNormalized { path: intermediate_dotdot.clone() },
-            Mapping::from_parts(intermediate_dotdot, PathBuf::from("/bar"), true).unwrap_err());
+            MappingError::PathNotNormalized {
+                path: intermediate_dotdot.clone()
+            },
+            Mapping::from_parts(intermediate_dotdot, PathBuf::from("/bar"), true).unwrap_err()
+        );
     }
 
     #[test]
     fn test_mapping_new_underlying_path_is_not_absolute() {
-        let err = Mapping::from_parts(
-            PathBuf::from("/foo"), PathBuf::from("bar"), false).unwrap_err();
-        assert_eq!(MappingError::PathNotAbsolute { path: PathBuf::from("bar") }, err);
+        let err =
+            Mapping::from_parts(PathBuf::from("/foo"), PathBuf::from("bar"), false).unwrap_err();
+        assert_eq!(
+            MappingError::PathNotAbsolute {
+                path: PathBuf::from("bar")
+            },
+            err
+        );
     }
 
     #[test]
     fn test_mapping_is_root() {
         let irrelevant = PathBuf::from("/some/place");
-        assert!(Mapping::from_parts(
-            PathBuf::from("/"), irrelevant.clone(), false).unwrap().is_root());
-        assert!(Mapping::from_parts(
-            PathBuf::from("///"), irrelevant.clone(), false).unwrap().is_root());
-        assert!(Mapping::from_parts(
-            PathBuf::from("/./"), irrelevant.clone(), false).unwrap().is_root());
-        assert!(!Mapping::from_parts(
-            PathBuf::from("/a"), irrelevant.clone(), false).unwrap().is_root());
-        assert!(!Mapping::from_parts(
-            PathBuf::from("/a/b"), irrelevant, false).unwrap().is_root());
+        assert!(
+            Mapping::from_parts(PathBuf::from("/"), irrelevant.clone(), false)
+                .unwrap()
+                .is_root()
+        );
+        assert!(
+            Mapping::from_parts(PathBuf::from("///"), irrelevant.clone(), false)
+                .unwrap()
+                .is_root()
+        );
+        assert!(
+            Mapping::from_parts(PathBuf::from("/./"), irrelevant.clone(), false)
+                .unwrap()
+                .is_root()
+        );
+        assert!(
+            !Mapping::from_parts(PathBuf::from("/a"), irrelevant.clone(), false)
+                .unwrap()
+                .is_root()
+        );
+        assert!(
+            !Mapping::from_parts(PathBuf::from("/a/b"), irrelevant, false)
+                .unwrap()
+                .is_root()
+        );
     }
 
     #[test]
@@ -947,28 +1261,38 @@ mod tests {
     #[should_panic(expected = "Ran out of identifiers")]
     fn id_generator_exhaustion() {
         let ids = IdGenerator::new(std::u64::MAX);
-        ids.next();  // OK, still at limit.
-        ids.next();  // Should panic.
+        ids.next(); // OK, still at limit.
+        ids.next(); // Should panic.
     }
 
     #[test]
     fn test_split_abs_path() {
         let empty: [Component; 0] = [];
-        assert_eq!(
-            &empty,
-            split_abs_path(&Path::new("/")).as_slice());
+        assert_eq!(&empty, split_abs_path(&Path::new("/")).as_slice());
         assert_eq!(
             &[Component::Normal(OsStr::new("foo"))],
-            split_abs_path(&Path::new("/foo")).as_slice());
+            split_abs_path(&Path::new("/foo")).as_slice()
+        );
         assert_eq!(
-            &[Component::Normal(OsStr::new("foo")), Component::Normal(OsStr::new("bar"))],
-            split_abs_path(&Path::new("/foo/bar")).as_slice());
+            &[
+                Component::Normal(OsStr::new("foo")),
+                Component::Normal(OsStr::new("bar"))
+            ],
+            split_abs_path(&Path::new("/foo/bar")).as_slice()
+        );
     }
 
     fn do_create_as_ok_test(uid: unistd::Uid, gid: unistd::Gid) {
         let root = tempdir().unwrap();
         let file = root.path().join("dir");
-        create_as(&file, uid, gid, |p| fs::create_dir(&p), |p| fs::remove_dir(&p)).unwrap();
+        create_as(
+            &file,
+            uid,
+            gid,
+            |p| fs::create_dir(&p),
+            |p| fs::remove_dir(&p),
+        )
+        .unwrap();
         let fs_attr = fs::symlink_metadata(&file).unwrap();
         assert_eq!((uid.as_raw(), gid.as_raw()), (fs_attr.uid(), fs_attr.gid()));
     }
@@ -991,7 +1315,7 @@ mod tests {
                 let uid = unistd::Uid::from_raw(user.uid());
                 let gid = unistd::Gid::from_raw(user.primary_group_id());
                 do_create_as_ok_test(uid, gid);
-            },
+            }
             None => {
                 panic!("UNPRIVILEGED_USER must be set when running as root for this test to run");
             }
@@ -1002,9 +1326,13 @@ mod tests {
     fn create_as_create_error_wins_over_delete_error() {
         let path = PathBuf::from("irrelevant");
         let err = create_as(
-            &path, unistd::Uid::current(), unistd::Gid::current(),
+            &path,
+            unistd::Uid::current(),
+            unistd::Gid::current(),
             |_| Err::<(), nix::Error>(nix::Error::from_errno(Errno::EPERM)),
-            |_| Err::<(), nix::Error>(nix::Error::from_errno(Errno::ENOENT))).unwrap_err();
+            |_| Err::<(), nix::Error>(nix::Error::from_errno(Errno::ENOENT)),
+        )
+        .unwrap_err();
         assert_eq!(nix::Error::from_errno(Errno::EPERM), err);
     }
 
@@ -1020,8 +1348,14 @@ mod tests {
 
         let root = tempdir().unwrap();
         let file = root.path().join("dir");
-        create_as(&file, other_uid, gid, |p| fs::create_dir(&p), |p| fs::remove_dir(&p))
-            .unwrap_err();
+        create_as(
+            &file,
+            other_uid,
+            gid,
+            |p| fs::create_dir(&p),
+            |p| fs::remove_dir(&p),
+        )
+        .unwrap_err();
         fs::symlink_metadata(&file).unwrap_err();
     }
 }

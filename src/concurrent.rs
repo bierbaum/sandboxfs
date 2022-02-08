@@ -14,8 +14,8 @@
 
 use failure::Fallible;
 use nix::errno::Errno;
-use nix::unistd;
 use nix::sys::{self, signal};
+use nix::unistd;
 use signal_hook;
 use std::cmp;
 use std::fs;
@@ -23,17 +23,20 @@ use std::io::{self, Read};
 use std::os::unix::io as unix_io;
 use std::path::{Path, PathBuf};
 use std::process;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::time;
+use std::sync::Arc;
 use std::thread;
+use std::time;
 
 /// Converts a `nix::Error` that we expect to carry an errno to an `io::Error`.
 fn nix_to_io_error(err: nix::Error) -> io::Error {
     match err {
         nix::Error::Sys(errno) => io::Error::from_raw_os_error(errno as i32),
-        e => panic!("Did not expect to get an error without an errno from a nix call: {:?}", e),
+        e => panic!(
+            "Did not expect to get an error without an errno from a nix call: {:?}",
+            e
+        ),
     }
 }
 
@@ -68,7 +71,7 @@ impl ShareableFile {
         use std::os::unix::io::IntoRawFd;
         ShareableFile {
             fd: file.into_raw_fd(),
-            watchers: vec!(),
+            watchers: vec![],
             closed: Arc::from(AtomicBool::new(false)),
         }
     }
@@ -111,14 +114,19 @@ impl Drop for ShareableFile {
                 // leaking the write ends of these pipes.  This should be fixed, but it's not a big
                 // deal because we don't do this in sandboxfs.
                 if e.as_errno().expect("Must have been a system error") != Errno::EPIPE {
-                    warn!("Failed to tell ShareableFileReader with handle {} of close: {}",
-                        *watcher, e)
+                    warn!(
+                        "Failed to tell ShareableFileReader with handle {} of close: {}",
+                        *watcher, e
+                    )
                 }
             }
             if let Err(e) = unistd::close(*watcher) {
                 // Closing should really not have failed, but if it did, it does not hurt and there
                 // is nothing we can do anyway.
-                warn!("Failed to close pipe write end with handle {}: {}", *watcher, e)
+                warn!(
+                    "Failed to close pipe write end with handle {}: {}",
+                    *watcher, e
+                )
             }
         }
 
@@ -172,11 +180,11 @@ impl Read for ShareableFileReader {
             Ok(read_count) => Ok(read_count),
             err => {
                 if self.closed.load(Ordering::SeqCst) {
-                    Ok(0)  // Simulate EOF due to close in another thread.
+                    Ok(0) // Simulate EOF due to close in another thread.
                 } else {
                     err
                 }
-            },
+            }
         }
     }
 }
@@ -219,8 +227,11 @@ impl SignalsInstaller {
             sigset.add(*signal);
         }
         signal::pthread_sigmask(
-            signal::SigmaskHow::SIG_BLOCK, Some(&sigset), Some(&mut old_sigset))
-            .expect("pthread_sigmask is not expected to fail");
+            signal::SigmaskHow::SIG_BLOCK,
+            Some(&sigset),
+            Some(&mut old_sigset),
+        )
+        .expect("pthread_sigmask is not expected to fail");
         SignalsInstaller { old_sigset }
     }
 
@@ -228,7 +239,7 @@ impl SignalsInstaller {
     pub fn install(self, mount_point: PathBuf) -> Fallible<SignalsHandler> {
         let (signal_sender, signal_receiver) = mpsc::channel();
 
-        let mut signums = vec!();
+        let mut signums = vec![];
         for signal in CAPTURED_SIGNALS.iter() {
             signums.push(*signal as i32);
         }
@@ -245,8 +256,12 @@ impl SignalsInstaller {
 
 impl Drop for SignalsInstaller {
     fn drop(&mut self) {
-        signal::pthread_sigmask(signal::SigmaskHow::SIG_SETMASK, Some(&self.old_sigset), None)
-            .expect("pthread_sigmask is not expected to fail and we cannot correctly clean up");
+        signal::pthread_sigmask(
+            signal::SigmaskHow::SIG_SETMASK,
+            Some(&self.old_sigset),
+            None,
+        )
+        .expect("pthread_sigmask is not expected to fail and we cannot correctly clean up");
     }
 }
 
@@ -262,16 +277,21 @@ fn unmount(path: &Path) -> Fallible<()> {
 
     #[cfg(any(target_os = "linux"))]
     fn run_unmount(path: &Path) -> io::Result<process::Output> {
-        process::Command::new("fusermount").arg("-u").arg(path).output()
+        process::Command::new("fusermount")
+            .arg("-u")
+            .arg(path)
+            .output()
     }
 
     let output = run_unmount(path)?;
     if output.status.success() {
         Ok(())
     } else {
-        Err(format_err!("stdout: {}, stderr: {}",
+        Err(format_err!(
+            "stdout: {}, stderr: {}",
             String::from_utf8_lossy(&output.stdout).trim(),
-            String::from_utf8_lossy(&output.stderr).trim()))
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
     }
 }
 
@@ -289,14 +309,16 @@ fn retry_unmount<P: AsRef<Path>>(mount_point: P) {
             Ok(()) => break 'retry,
             Err(e) => {
                 if backoff >= goal {
-                    warn!("Unmounting file system failed with '{}'; will retry in {:?}",
-                        e, backoff);
+                    warn!(
+                        "Unmounting file system failed with '{}'; will retry in {:?}",
+                        e, backoff
+                    );
                 }
                 thread::sleep(backoff);
                 if backoff < goal {
                     backoff = cmp::min(goal, backoff * 2);
                 }
-            },
+            }
         }
     }
 }
@@ -330,13 +352,23 @@ impl SignalsHandler {
     /// Upon receipt of a signal from `signals`, the handler first updates `signal_sender` with the
     /// number of the received signal and then attempts to unmount `mount_point` indefinitely to
     /// unblock the main FUSE loop.
-    fn handler(signals: &signal_hook::iterator::Signals, mount_point: PathBuf,
-        signal_sender: &mpsc::Sender<i32>) {
+    fn handler(
+        signals: &signal_hook::iterator::Signals,
+        mount_point: PathBuf,
+        signal_sender: &mpsc::Sender<i32>,
+    ) {
         let signo = signals.forever().next().unwrap();
         if let Err(e) = signal_sender.send(signo) {
-            warn!("Failed to propagate signal to main thread; will get stuck exiting: {}", e);
+            warn!(
+                "Failed to propagate signal to main thread; will get stuck exiting: {}",
+                e
+            );
         }
-        info!("Caught signal {}; unmounting {}", signo, mount_point.display());
+        info!(
+            "Caught signal {}; unmounting {}",
+            signo,
+            mount_point.display()
+        );
         retry_unmount(mount_point);
 
         // It'd be nice if we could just "drop(signals)" here and then send the same received signal
@@ -350,17 +382,20 @@ impl SignalsHandler {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use nix::sys;
     use std::io::{Read, Write};
     use std::thread;
-    use super::*;
     use tempfile;
 
     #[test]
     fn test_shareable_file_clones_share_descriptor_and_only_one_owns() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("file");
-        fs::File::create(&path).unwrap().write_all(b"ABCDEFG").unwrap();
+        fs::File::create(&path)
+            .unwrap()
+            .write_all(b"ABCDEFG")
+            .unwrap();
 
         fn read_one_byte(input: &mut impl Read) -> u8 {
             let mut buffer = [0];
@@ -372,11 +407,16 @@ mod tests {
         let mut reader1 = file.reader().unwrap();
         let mut reader2 = file.reader().unwrap();
         assert_eq!(b'A', read_one_byte(&mut reader1));
-        drop(reader1);  // Make sure dropping a non-owner copy doesn't close the file handle.
+        drop(reader1); // Make sure dropping a non-owner copy doesn't close the file handle.
         assert_eq!(b'B', read_one_byte(&mut reader2));
-        drop(file);  // Closes the file descriptor so the readers should now not be able to read.
+        drop(file); // Closes the file descriptor so the readers should now not be able to read.
         let mut buffer = [0];
-        assert_eq!(0, reader2.read(&mut buffer).expect("Expected 0 byte count as EOF after close"));
+        assert_eq!(
+            0,
+            reader2
+                .read(&mut buffer)
+                .expect("Expected 0 byte count as EOF after close")
+        );
     }
 
     fn try_shareable_file_close_unblocks_reads_without_error() {
@@ -411,12 +451,18 @@ mod tests {
         reader_ready_rx.recv().unwrap();
         thread::sleep(time::Duration::from_millis(1));
 
-        drop(file);  // This should unblock the reader thread and let the join complete.
-        reader_handle.join().unwrap().expect("Read didn't return success on EOF-like condition");
+        drop(file); // This should unblock the reader thread and let the join complete.
+        reader_handle
+            .join()
+            .unwrap()
+            .expect("Read didn't return success on EOF-like condition");
 
         // We have already verified that the reader can be asynchronously terminated without the
         // write handle causing interference.  Retrieve the write end of the FIFO and close it.
-        let writer = writer_handle.join().unwrap().expect("Write didn't finish successfully");
+        let writer = writer_handle
+            .join()
+            .unwrap()
+            .expect("Write didn't finish successfully");
         drop(writer);
     }
 

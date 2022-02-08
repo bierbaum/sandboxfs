@@ -16,13 +16,20 @@
 
 // Keep these in sync with the list of checks in lib.rs.
 #![warn(bad_style, missing_docs)]
-#![warn(unused, unused_extern_crates, unused_import_braces, unused_qualifications)]
+#![warn(
+    unused,
+    unused_extern_crates,
+    unused_import_braces,
+    unused_qualifications
+)]
 #![warn(unsafe_code)]
 
 extern crate env_logger;
-#[macro_use] extern crate failure;
+#[macro_use]
+extern crate failure;
 extern crate getopts;
-#[macro_use] extern crate log;
+#[macro_use]
+extern crate log;
 extern crate sandboxfs;
 extern crate time;
 
@@ -76,12 +83,12 @@ fn parse_allow(s: &str) -> Fallible<&'static [&'static str]> {
             } else {
                 Ok(&["-o", "allow_root"])
             }
-        },
+        }
         "self" => Ok(&[]),
         _ => {
             let message = format!("{} must be one of other, root, or self", s);
             Err(UsageError { message }.into())
-        },
+        }
     }
 }
 
@@ -92,25 +99,33 @@ fn parse_duration(s: &str) -> Result<Timespec, UsageError> {
         None => {
             let message = format!("invalid time specification {}: missing unit", s);
             return Err(UsageError { message });
-        },
+        }
     };
 
     if unit != SECONDS_SUFFIX {
         let message = format!(
             "invalid time specification {}: unsupported unit '{}' (only '{}' is allowed)",
-            s, unit, SECONDS_SUFFIX);
+            s, unit, SECONDS_SUFFIX
+        );
         return Err(UsageError { message });
     }
 
-    value.parse::<u32>()
-        .map(|sec| Timespec { sec: i64::from(sec), nsec: 0 })
-        .map_err(|e| UsageError { message: format!("invalid time specification {}: {}", s, e) })
+    value
+        .parse::<u32>()
+        .map(|sec| Timespec {
+            sec: i64::from(sec),
+            nsec: 0,
+        })
+        .map_err(|e| UsageError {
+            message: format!("invalid time specification {}: {}", s, e),
+        })
 }
 
 /// Takes the list of strings that represent mappings (supplied via multiple instances of the
 /// `--mapping` flag) and returns a parsed representation of those flags.
-fn parse_mappings<T: AsRef<str>, U: IntoIterator<Item=T>>(args: U)
-    -> Result<Vec<sandboxfs::Mapping>, UsageError> {
+fn parse_mappings<T: AsRef<str>, U: IntoIterator<Item = T>>(
+    args: U,
+) -> Result<Vec<sandboxfs::Mapping>, UsageError> {
     let mut mappings = Vec::new();
 
     for arg in args {
@@ -128,8 +143,10 @@ fn parse_mappings<T: AsRef<str>, U: IntoIterator<Item=T>>(args: U)
             } else if fields[0] == "rw" {
                 true
             } else {
-                let message = format!("bad mapping {}: type was {} but should be ro or rw",
-                    arg, fields[0]);
+                let message = format!(
+                    "bad mapping {}: type was {} but should be ro or rw",
+                    arg, fields[0]
+                );
                 return Err(UsageError { message });
             }
         };
@@ -177,8 +194,13 @@ fn program_name(args: &[String], default: &'static str) -> String {
 /// to `/dev/std*`.  Even though that's discouraged (because reopening these devices under `sudo` is
 /// not possible), we cannot reliably prevent the user from supplying those paths.
 fn file_flag(value: &Option<String>) -> Option<PathBuf> {
-    value.as_ref().and_then(
-        |path| if path == DEFAULT_INOUT { None } else { Some(PathBuf::from(path) )})
+    value.as_ref().and_then(|path| {
+        if path == DEFAULT_INOUT {
+            None
+        } else {
+            Some(PathBuf::from(path))
+        }
+    })
 }
 
 /// Prints program usage information to stdout.
@@ -201,24 +223,66 @@ fn safe_main(program: &str, args: &[String]) -> Fallible<()> {
     let cpus = num_cpus::get();
 
     let mut opts = Options::new();
-    opts.optopt("", "allow", concat!("specifies who should have access to the file system",
-        " (default: self)"), "other|root|self");
-    opts.optopt("", "cpu_profile", "enables CPU profiling and writes a profile to the given path",
-        "PATH");
+    opts.optopt(
+        "",
+        "allow",
+        concat!(
+            "specifies who should have access to the file system",
+            " (default: self)"
+        ),
+        "other|root|self",
+    );
+    opts.optopt(
+        "",
+        "cpu_profile",
+        "enables CPU profiling and writes a profile to the given path",
+        "PATH",
+    );
     opts.optflag("", "help", "prints usage information and exits");
-    opts.optopt("", "input",
-        &format!("where to read reconfiguration data from ({} for stdin)", DEFAULT_INOUT),
-        "PATH");
-    opts.optmulti("", "mapping", "type and locations of a mapping", "TYPE:PATH:UNDERLYING_PATH");
-    opts.optflag("", "node_cache", "enables the path-based node cache (known broken)");
-    opts.optopt("", "output",
-        &format!("where to write the reconfiguration status to ({} for stdout)", DEFAULT_INOUT),
-        "PATH");
-    opts.optopt("", "reconfig_threads",
-        &format!("number of reconfiguration threads (default: {})", cpus), "COUNT");
-    opts.optopt("", "ttl",
-        &format!("how long the kernel is allowed to keep file metadata (default: {})", DEFAULT_TTL),
-        &format!("TIME{}", SECONDS_SUFFIX));
+    opts.optopt(
+        "",
+        "input",
+        &format!(
+            "where to read reconfiguration data from ({} for stdin)",
+            DEFAULT_INOUT
+        ),
+        "PATH",
+    );
+    opts.optmulti(
+        "",
+        "mapping",
+        "type and locations of a mapping",
+        "TYPE:PATH:UNDERLYING_PATH",
+    );
+    opts.optflag(
+        "",
+        "node_cache",
+        "enables the path-based node cache (known broken)",
+    );
+    opts.optopt(
+        "",
+        "output",
+        &format!(
+            "where to write the reconfiguration status to ({} for stdout)",
+            DEFAULT_INOUT
+        ),
+        "PATH",
+    );
+    opts.optopt(
+        "",
+        "reconfig_threads",
+        &format!("number of reconfiguration threads (default: {})", cpus),
+        "COUNT",
+    );
+    opts.optopt(
+        "",
+        "ttl",
+        &format!(
+            "how long the kernel is allowed to keep file metadata (default: {})",
+            DEFAULT_TTL
+        ),
+        &format!("TIME{}", SECONDS_SUFFIX),
+    );
     opts.optflag("", "version", "prints version information and exits");
     opts.optflag("", "xattrs", "enables support for extended attributes");
     let matches = opts.parse(args)?;
@@ -233,7 +297,7 @@ fn safe_main(program: &str, args: &[String]) -> Fallible<()> {
         return Ok(());
     }
 
-    let mut options = vec!("-o", "fsname=sandboxfs");
+    let mut options = vec!["-o", "fsname=sandboxfs"];
     // TODO(jmmv): Support passing in arbitrary FUSE options from the command line, like "-o ro".
 
     if let Some(value) = matches.opt_str("allow") {
@@ -247,30 +311,38 @@ fn safe_main(program: &str, args: &[String]) -> Fallible<()> {
     let ttl = match matches.opt_str("ttl") {
         Some(value) => parse_duration(&value)?,
         None => parse_duration(DEFAULT_TTL).expect(
-            "default value for flag is not accepted by the parser; this is a bug in the value"),
+            "default value for flag is not accepted by the parser; this is a bug in the value",
+        ),
     };
 
     let input = {
         let input_flag = matches.opt_str("input");
-        sandboxfs::open_input(file_flag(&input_flag))
-            .with_context(|_| format!("Failed to open reconfiguration input '{}'",
-                input_flag.unwrap_or_else(|| DEFAULT_INOUT.to_owned())))?
+        sandboxfs::open_input(file_flag(&input_flag)).with_context(|_| {
+            format!(
+                "Failed to open reconfiguration input '{}'",
+                input_flag.unwrap_or_else(|| DEFAULT_INOUT.to_owned())
+            )
+        })?
     };
 
     let output = {
         let output_flag = matches.opt_str("output");
-        sandboxfs::open_output(file_flag(&output_flag))
-            .with_context(|_| format!("Failed to open reconfiguration output '{}'",
-                output_flag.unwrap_or_else(|| DEFAULT_INOUT.to_owned())))?
+        sandboxfs::open_output(file_flag(&output_flag)).with_context(|_| {
+            format!(
+                "Failed to open reconfiguration output '{}'",
+                output_flag.unwrap_or_else(|| DEFAULT_INOUT.to_owned())
+            )
+        })?
     };
 
     let reconfig_threads = match matches.opt_str("reconfig_threads") {
-        Some(value) => {
-            match value.parse::<usize>() {
-                Ok(n) => n,
-                Err(e) => return Err(UsageError {
-                    message: format!("invalid thread count {}: {}", value, e)
-                }.into()),
+        Some(value) => match value.parse::<usize>() {
+            Ok(n) => n,
+            Err(e) => {
+                return Err(UsageError {
+                    message: format!("invalid thread count {}: {}", value, e),
+                }
+                .into())
             }
         },
         None => cpus,
@@ -279,7 +351,10 @@ fn safe_main(program: &str, args: &[String]) -> Fallible<()> {
     let mount_point = if matches.free.len() == 1 {
         Path::new(&matches.free[0])
     } else {
-        return Err(UsageError { message: "invalid number of arguments".to_string() }.into());
+        return Err(UsageError {
+            message: "invalid number of arguments".to_string(),
+        }
+        .into());
     };
 
     let node_cache: sandboxfs::ArcCache = if matches.opt_present("node_cache") {
@@ -291,12 +366,21 @@ fn safe_main(program: &str, args: &[String]) -> Fallible<()> {
 
     let _profiler;
     if let Some(path) = matches.opt_str("cpu_profile") {
-        _profiler = sandboxfs::ScopedProfiler::start(&path).context("Failed to start CPU profile")?;
+        _profiler =
+            sandboxfs::ScopedProfiler::start(&path).context("Failed to start CPU profile")?;
     };
     sandboxfs::mount(
-        mount_point, &options, &mappings, ttl, node_cache, matches.opt_present("xattrs"),
-        input, output, reconfig_threads)
-        .with_context(|_| format!("Failed to mount {}", mount_point.display()))?;
+        mount_point,
+        &options,
+        &mappings,
+        ttl,
+        node_cache,
+        matches.opt_present("xattrs"),
+        input,
+        output,
+        reconfig_threads,
+    )
+    .with_context(|_| format!("Failed to mount {}", mount_point.display()))?;
     Ok(())
 }
 
@@ -324,26 +408,39 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use sandboxfs::Mapping;
     use super::*;
+    use sandboxfs::Mapping;
 
     /// Checks that an error, once formatted for printing, contains the given substring.
     fn err_contains(substr: &str, err: impl failure::Fail) {
         let formatted = format!("{}", err);
-        assert!(formatted.contains(substr),
-            "bad error message '{}'; does not contain '{}'", formatted, substr);
+        assert!(
+            formatted.contains(substr),
+            "bad error message '{}'; does not contain '{}'",
+            formatted,
+            substr
+        );
     }
 
     #[test]
     fn test_parse_duration_ok() {
-        assert_eq!(Timespec { sec: 1234, nsec: 0 }, parse_duration("1234s").unwrap());
+        assert_eq!(
+            Timespec { sec: 1234, nsec: 0 },
+            parse_duration("1234s").unwrap()
+        );
     }
 
     #[test]
     fn test_parse_duration_bad_unit() {
         err_contains("missing unit", parse_duration("1234").unwrap_err());
-        err_contains("unsupported unit 'ms'", parse_duration("1234ms").unwrap_err());
-        err_contains("unsupported unit 'ss'", parse_duration("1234ss").unwrap_err());
+        err_contains(
+            "unsupported unit 'ms'",
+            parse_duration("1234ms").unwrap_err(),
+        );
+        err_contains(
+            "unsupported unit 'ss'",
+            parse_duration("1234ss").unwrap_err(),
+        );
     }
 
     #[test]
@@ -356,10 +453,10 @@ mod tests {
     #[test]
     fn test_parse_mappings_ok() {
         let args = ["ro:/:/fake/root", "rw:/foo:/bar"];
-        let exp_mappings = vec!(
+        let exp_mappings = vec![
             Mapping::from_parts(PathBuf::from("/"), PathBuf::from("/fake/root"), false).unwrap(),
             Mapping::from_parts(PathBuf::from("/foo"), PathBuf::from("/bar"), true).unwrap(),
-        );
+        ];
         match parse_mappings(&args) {
             Ok(mappings) => assert_eq!(exp_mappings, mappings),
             Err(e) => panic!(e),
@@ -371,7 +468,9 @@ mod tests {
         for arg in ["", "foo:bar", "foo:bar:baz:extra"].iter() {
             let err = parse_mappings(&[arg]).unwrap_err();
             err_contains(
-                &format!("bad mapping {}: expected three colon-separated fields", arg), err);
+                &format!("bad mapping {}: expected three colon-separated fields", arg),
+                err,
+            );
         }
     }
 
@@ -379,7 +478,10 @@ mod tests {
     fn test_parse_mappings_bad_type() {
         let args = ["rr:/foo:/bar"];
         let err = parse_mappings(&args).unwrap_err();
-        err_contains("bad mapping rr:/foo:/bar: type was rr but should be ro or rw", err);
+        err_contains(
+            "bad mapping rr:/foo:/bar: type was rr but should be ro or rw",
+            err,
+        );
     }
 
     #[test]

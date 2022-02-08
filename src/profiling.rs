@@ -12,7 +12,8 @@
 // License for the specific language governing permissions and limitations
 // under the License.
 
-#[cfg(feature = "profiling")] use cpuprofiler::PROFILER;
+#[cfg(feature = "profiling")]
+use cpuprofiler::PROFILER;
 use failure::Fallible;
 use std::path::Path;
 
@@ -23,7 +24,9 @@ pub struct ScopedProfiler {}
 impl ScopedProfiler {
     #[cfg(not(feature = "profiling"))]
     fn real_start<P: AsRef<Path>>(_path: P) -> Fallible<ScopedProfiler> {
-        Err(format_err!("Compile-time \"profiling\" feature not enabled"))
+        Err(format_err!(
+            "Compile-time \"profiling\" feature not enabled"
+        ))
     }
 
     #[cfg(feature = "profiling")]
@@ -52,13 +55,14 @@ impl ScopedProfiler {
     }
 
     #[cfg(not(feature = "profiling"))]
-    fn real_stop(&mut self) {
-    }
+    fn real_stop(&mut self) {}
 
     #[cfg(feature = "profiling")]
     fn real_stop(&mut self) {
         let mut profiler = PROFILER.lock().unwrap();
-        profiler.stop().expect("Profiler apparently not active, but it must have been");
+        profiler
+            .stop()
+            .expect("Profiler apparently not active, but it must have been");
         info!("CPU profiler stopped");
     }
 }

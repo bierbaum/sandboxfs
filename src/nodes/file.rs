@@ -17,7 +17,8 @@ extern crate fuse;
 use failure::Fallible;
 use nix::errno;
 use nodes::{
-    ArcHandle, ArcNode, AttrDelta, Cache, Handle, KernelError, Node, NodeResult, conv, setattr};
+    conv, setattr, ArcHandle, ArcNode, AttrDelta, Cache, Handle, KernelError, Node, NodeResult,
+};
 use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::fs::FileExt;
@@ -43,7 +44,9 @@ impl OpenFile {
 impl Handle for OpenFile {
     fn read(&self, offset: i64, size: u32) -> NodeResult<Vec<u8>> {
         let mut buffer = vec![0; size as usize];
-        let n = self.file.read_at(&mut buffer[..size as usize], offset as u64)?;
+        let n = self
+            .file
+            .read_at(&mut buffer[..size as usize], offset as u64)?;
         buffer.truncate(n);
         Ok(buffer)
     }
@@ -55,7 +58,11 @@ impl Handle for OpenFile {
             // theoretically be bigger.
             // TODO(jmmv): Should fix the FUSE libraries to just expose Rust API-friendly quantities
             // (usize in this case) and handle the kernel/Rust boundary internally.
-            warn!("Truncating too-long write to {} (asked for {} bytes)", MAX_WRITE, data.len());
+            warn!(
+                "Truncating too-long write to {} (asked for {} bytes)",
+                MAX_WRITE,
+                data.len()
+            );
             data = &data[..MAX_WRITE];
         }
 
@@ -104,8 +111,12 @@ impl File {
     /// `fs_attr` is an input parameter because, by the time we decide to instantiate a file
     /// node (e.g. as we discover directory entries during readdir or lookup), we have already
     /// issued a stat on the underlying file system and we cannot re-do it for efficiency reasons.
-    pub fn new_mapped(inode: u64, underlying_path: &Path, fs_attr: &fs::Metadata, writable: bool)
-        -> ArcNode {
+    pub fn new_mapped(
+        inode: u64,
+        underlying_path: &Path,
+        fs_attr: &fs::Metadata,
+        writable: bool,
+    ) -> ArcNode {
         if !File::supports_type(fs_attr.file_type()) {
             panic!("Can only construct based on non-directories / non-symlinks");
         }
@@ -116,7 +127,11 @@ impl File {
             attr: attr,
         };
 
-        Arc::new(File { inode, writable, state: Arc::from(Mutex::from(state)) })
+        Arc::new(File {
+            inode,
+            writable,
+            state: Arc::from(Mutex::from(state)),
+        })
     }
 
     /// Same as `getattr` but with the node already locked.
@@ -124,8 +139,11 @@ impl File {
         if let Some(path) = &state.underlying_path {
             let fs_attr = fs::symlink_metadata(path)?;
             if !File::supports_type(fs_attr.file_type()) {
-                warn!("Path {} backing a file node is no longer a file; got {:?}",
-                    path.display(), fs_attr.file_type());
+                warn!(
+                    "Path {} backing a file node is no longer a file; got {:?}",
+                    path.display(),
+                    fs_attr.file_type()
+                );
                 return Err(KernelError::from_errno(errno::Errno::EIO));
             }
             state.attr = conv::attr_fs_to_fuse(path, inode, state.attr.nlink, &fs_attr);
@@ -153,7 +171,8 @@ impl Node for File {
         let mut state = self.state.lock().unwrap();
         assert!(
             state.underlying_path.is_some(),
-            "Delete already called or trying to delete an explicit mapping");
+            "Delete already called or trying to delete an explicit mapping"
+        );
         cache.delete(state.underlying_path.as_ref().unwrap(), state.attr.kind);
         state.underlying_path = None;
         debug_assert!(state.attr.nlink >= 1);
@@ -162,10 +181,15 @@ impl Node for File {
 
     fn set_underlying_path(&self, path: &Path, cache: &dyn Cache) {
         let mut state = self.state.lock().unwrap();
-        debug_assert!(state.underlying_path.is_some(),
-            "Renames should not have been allowed in scaffold or deleted nodes");
+        debug_assert!(
+            state.underlying_path.is_some(),
+            "Renames should not have been allowed in scaffold or deleted nodes"
+        );
         cache.rename(
-            state.underlying_path.as_ref().unwrap(), path.to_owned(), state.attr.kind);
+            state.underlying_path.as_ref().unwrap(),
+            path.to_owned(),
+            state.attr.kind,
+        );
         state.underlying_path = Some(PathBuf::from(path));
     }
 
@@ -203,8 +227,10 @@ impl Node for File {
         let state = self.state.lock().unwrap();
 
         let options = conv::flags_to_openoptions(flags, self.writable)?;
-        let path = state.underlying_path.as_ref().expect(
-            "Don't know how to handle a request to reopen a deleted file");
+        let path = state
+            .underlying_path
+            .as_ref()
+            .expect("Don't know how to handle a request to reopen a deleted file");
         let file = options.open(&path)?;
         Ok(Arc::from(OpenFile::from(self.state.clone(), file)))
     }

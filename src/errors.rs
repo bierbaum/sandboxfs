@@ -43,7 +43,7 @@ impl From<io::Error> for KernelError {
             None => {
                 warn!("Got io::Error without an errno; propagating as EIO: {}", e);
                 KernelError::from_errno(Errno::EIO)
-            },
+            }
         }
     }
 }

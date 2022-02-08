@@ -15,20 +15,21 @@
 extern crate fuse;
 extern crate time;
 
-use {create_as, IdGenerator};
 use failure::{Fallible, ResultExt};
-use nix::{errno, fcntl, sys, unistd};
 use nix::dir as rawdir;
+use nix::{errno, fcntl, sys, unistd};
 use nodes::{
-    ArcHandle, ArcNode, AttrDelta, Cache, Handle, KernelError, Node, NodeResult, conv, setattr};
+    conv, setattr, ArcHandle, ArcNode, AttrDelta, Cache, Handle, KernelError, Node, NodeResult,
+};
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{self as unix_fs, DirBuilderExt, OpenOptionsExt};
 use std::fs;
 use std::io;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{self as unix_fs, DirBuilderExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use {create_as, IdGenerator};
 
 /// Takes the components of a path and returns the first normal component and the rest.
 ///
@@ -79,19 +80,19 @@ impl OpenDir {
     /// `_ids` and `_cache` are the file system-wide bookkeeping objects needed to instantiate new
     /// nodes, used when readdir discovers an underlying node that was not yet known.
     fn readdirall(&self, ids: &IdGenerator, cache: &dyn Cache) -> NodeResult<Vec<ReplyEntry>> {
-        let mut reply = vec!();
+        let mut reply = vec![];
 
         let mut state = self.state.lock().unwrap();
 
         reply.push(ReplyEntry {
             inode: self.inode,
             fs_type: fuse::FileType::Directory,
-            name: OsString::from(".")
+            name: OsString::from("."),
         });
         reply.push(ReplyEntry {
             inode: state.parent,
             fs_type: fuse::FileType::Directory,
-            name: OsString::from("..")
+            name: OsString::from(".."),
         });
 
         // First, return the entries that correspond to explicit mappings performed by the user at
@@ -103,7 +104,7 @@ impl OpenDir {
                 reply.push(ReplyEntry {
                     inode: dirent.node.inode(),
                     fs_type: dirent.node.file_type_cached(),
-                    name: name.clone()
+                    name: name.clone(),
                 });
             }
         }
@@ -154,7 +155,11 @@ impl OpenDir {
             let fs_type = conv::filetype_fs_to_fuse(&path, fs_attr.file_type());
             let child = cache.get_or_create(ids, &path, &fs_attr, self.writable);
 
-            reply.push(ReplyEntry { inode: child.inode(), fs_type: fs_type, name: name.clone() });
+            reply.push(ReplyEntry {
+                inode: child.inode(),
+                fs_type: fs_type,
+                name: name.clone(),
+            });
 
             // Do the insertion into state.children after calling reply.add() to be able to move
             // the name into the key without having to copy it again.
@@ -176,8 +181,13 @@ impl OpenDir {
 }
 
 impl Handle for OpenDir {
-    fn readdir(&self, ids: &IdGenerator, cache: &dyn Cache, offset: i64,
-        reply: &mut fuse::ReplyDirectory) -> NodeResult<()> {
+    fn readdir(
+        &self,
+        ids: &IdGenerator,
+        cache: &dyn Cache,
+        offset: i64,
+        reply: &mut fuse::ReplyDirectory,
+    ) -> NodeResult<()> {
         let mut offset: usize = offset as usize;
 
         let mut contents = self.reply_contents.lock().unwrap();
@@ -194,7 +204,7 @@ impl Handle for OpenDir {
         while offset < contents.len() {
             let entry = &contents[offset];
             if reply.add(entry.inode, offset as i64, entry.fs_type, &entry.name) {
-                break;  // Reply buffer is full.
+                break; // Reply buffer is full.
             }
             offset += 1;
         }
@@ -233,13 +243,13 @@ impl Dir {
             ino: inode,
             kind: fuse::FileType::Directory,
             nlink: 2,  // "." entry plus whichever initial named node points at this.
-            size: 2,  // TODO(jmmv): Reevaluate what directory sizes should be.
-            blocks: 1,  // TODO(jmmv): Reevaluate what directory blocks should be.
+            size: 2,   // TODO(jmmv): Reevaluate what directory sizes should be.
+            blocks: 1, // TODO(jmmv): Reevaluate what directory blocks should be.
             atime: now,
             mtime: now,
             ctime: now,
             crtime: now,
-            perm: 0o555 as u16,  // Scaffold directories cannot be mutated by the user.
+            perm: 0o555 as u16, // Scaffold directories cannot be mutated by the user.
             uid: unistd::getuid().as_raw(),
             gid: unistd::getgid().as_raw(),
             rdev: 0,
@@ -269,8 +279,12 @@ impl Dir {
     /// `fs_attr` is an input parameter because, by the time we decide to instantiate a directory
     /// node (e.g. as we discover directory entries during readdir or lookup), we have already
     /// issued a stat on the underlying file system and we cannot re-do it for efficiency reasons.
-    pub fn new_mapped(inode: u64, underlying_path: &Path, fs_attr: &fs::Metadata, writable: bool)
-        -> ArcNode {
+    pub fn new_mapped(
+        inode: u64,
+        underlying_path: &Path,
+        fs_attr: &fs::Metadata,
+        writable: bool,
+    ) -> ArcNode {
         if !fs_attr.is_dir() {
             panic!("Can only construct based on dirs");
         }
@@ -294,7 +308,11 @@ impl Dir {
             children: HashMap::new(),
         };
 
-        Arc::new(Dir { inode, writable, state: Arc::from(Mutex::from(state)) })
+        Arc::new(Dir {
+            inode,
+            writable,
+            state: Arc::from(Mutex::from(state)),
+        })
     }
 
     /// Creates a new scaffold directory as a child of the current one.
@@ -305,8 +323,13 @@ impl Dir {
     ///
     /// This is purely a helper function for `map`.  As a result, the caller is responsible for
     /// inserting the new directory into the children of the current directory.
-    fn new_scaffold_child(&self, underlying_path: Option<&PathBuf>, name: &OsStr, ids: &IdGenerator,
-        now: time::Timespec) -> ArcNode {
+    fn new_scaffold_child(
+        &self,
+        underlying_path: Option<&PathBuf>,
+        name: &OsStr,
+        ids: &IdGenerator,
+        now: time::Timespec,
+    ) -> ArcNode {
         if let Some(path) = underlying_path {
             let child_path = path.join(name);
             match fs::symlink_metadata(&child_path) {
@@ -315,14 +338,20 @@ impl Dir {
                         return Dir::new_mapped(ids.next(), &child_path, &fs_attr, self.writable);
                     }
 
-                    info!("Mapping clobbers non-directory {} with an immutable directory",
-                        child_path.display());
-                },
+                    info!(
+                        "Mapping clobbers non-directory {} with an immutable directory",
+                        child_path.display()
+                    );
+                }
                 Err(e) => {
                     if e.kind() != io::ErrorKind::NotFound {
-                        warn!("Mapping clobbers {} due to an error: {}", child_path.display(), e);
+                        warn!(
+                            "Mapping clobbers {} due to an error: {}",
+                            child_path.display(),
+                            e
+                        );
                     }
-                },
+                }
             }
         }
         Dir::new_empty(ids.next(), Some(self), now)
@@ -333,8 +362,11 @@ impl Dir {
         if let Some(path) = &state.underlying_path {
             let fs_attr = fs::symlink_metadata(path)?;
             if !fs_attr.is_dir() {
-                warn!("Path {} backing a directory node is no longer a directory; got {:?}",
-                    path.display(), fs_attr.file_type());
+                warn!(
+                    "Path {} backing a directory node is no longer a directory; got {:?}",
+                    path.display(),
+                    fs_attr.file_type()
+                );
                 return Err(KernelError::from_errno(errno::Errno::EIO));
             }
             state.attr = conv::attr_fs_to_fuse(path, inode, state.attr.nlink, &fs_attr);
@@ -363,11 +395,16 @@ impl Dir {
     }
 
     // Same as `lookup` but with the node already locked.
-    fn lookup_locked(writable: bool, state: &mut MutableDir, name: &OsStr, ids: &IdGenerator,
-        cache: &dyn Cache) -> NodeResult<(ArcNode, fuse::FileAttr)> {
+    fn lookup_locked(
+        writable: bool,
+        state: &mut MutableDir,
+        name: &OsStr,
+        ids: &IdGenerator,
+        cache: &dyn Cache,
+    ) -> NodeResult<(ArcNode, fuse::FileAttr)> {
         if let Some(dirent) = state.children.get(name) {
             let refreshed_attr = dirent.node.getattr()?;
-            return Ok((dirent.node.clone(), refreshed_attr))
+            return Ok((dirent.node.clone(), refreshed_attr));
         }
 
         let (child, attr) = {
@@ -378,7 +415,11 @@ impl Dir {
             let fs_attr = fs::symlink_metadata(&path)?;
             let node = cache.get_or_create(ids, &path, &fs_attr, writable);
             let attr = conv::attr_fs_to_fuse(
-                path.as_path(), node.inode(), node.getattr()?.nlink, &fs_attr);
+                path.as_path(),
+                node.inode(),
+                node.getattr()?.nlink,
+                &fs_attr,
+            );
             (node, attr)
         };
         let dirent = Dirent {
@@ -401,9 +442,15 @@ impl Dir {
     /// node doesn't match this type, it means we encountered a race on the underlying file system
     /// and we fail the lookup.  (This is an artifact of how we currently implement this function
     /// as this condition should just be impossible.)
-    fn post_create_lookup(writable: bool, state: &mut MutableDir, path: &Path, name: &OsStr,
-        exp_type: fuse::FileType, ids: &IdGenerator, cache: &dyn Cache)
-        -> NodeResult<(ArcNode, fuse::FileAttr)> {
+    fn post_create_lookup(
+        writable: bool,
+        state: &mut MutableDir,
+        path: &Path,
+        name: &OsStr,
+        exp_type: fuse::FileType,
+        ids: &IdGenerator,
+        cache: &dyn Cache,
+    ) -> NodeResult<(ArcNode, fuse::FileAttr)> {
         debug_assert_eq!(path.file_name().unwrap(), name);
 
         // TODO(https://github.com/bazelbuild/sandboxfs/issues/43): We abuse lookup here to handle
@@ -414,12 +461,14 @@ impl Dir {
         match Dir::lookup_locked(writable, state, name, ids, cache) {
             Ok((node, attr)) => {
                 if node.file_type_cached() != exp_type {
-                    warn!("Newly-created file {} was replaced or deleted before create finished",
-                        path.display());
+                    warn!(
+                        "Newly-created file {} was replaced or deleted before create finished",
+                        path.display()
+                    );
                     return Err(KernelError::from_errno(errno::Errno::EIO));
                 }
                 Ok((node, attr))
-            },
+            }
             Err(e) => {
                 if let Err(e) = fs::remove_file(&path) {
                     warn!("Failed to clean up newly-created {}: {}", path.display(), e);
@@ -434,7 +483,9 @@ impl Dir {
     /// The behavior of these operations differs only in the syscall we invoke to delete the
     /// underlying entry, which is passed in as the `remove` parameter.
     fn remove_any<R>(&self, name: &OsStr, remove: R, cache: &dyn Cache) -> NodeResult<()>
-        where R: Fn(&PathBuf) -> io::Result<()> {
+    where
+        R: Fn(&PathBuf) -> io::Result<()>,
+    {
         let mut state = self.state.lock().unwrap();
         let path = Dir::get_writable_path(&mut state, name)?;
 
@@ -448,7 +499,9 @@ impl Dir {
         // because different lookups on different nodes could still race against the cache state.
         // We don't bother for now though: the Rust FUSE library serializes all requests so this
         // situation cannot arise.
-        let entry = state.children.remove(name)
+        let entry = state
+            .children
+            .remove(name)
             .expect("Presence guaranteed by get_writable_path call above");
         entry.node.delete(cache);
         Ok(())
@@ -472,7 +525,8 @@ impl Node for Dir {
         let mut state = self.state.lock().unwrap();
         assert!(
             state.underlying_path.is_some(),
-            "Delete already called or trying to delete an explicit mapping");
+            "Delete already called or trying to delete an explicit mapping"
+        );
         cache.delete(state.underlying_path.as_ref().unwrap(), state.attr.kind);
         state.underlying_path = None;
         // Make the hard link count for the directory be zero.  This is pretty much arbitrary as the
@@ -485,10 +539,15 @@ impl Node for Dir {
 
     fn set_underlying_path(&self, path: &Path, cache: &dyn Cache) {
         let mut state = self.state.lock().unwrap();
-        debug_assert!(state.underlying_path.is_some(),
-            "Renames should not have been allowed in scaffold or deleted nodes");
+        debug_assert!(
+            state.underlying_path.is_some(),
+            "Renames should not have been allowed in scaffold or deleted nodes"
+        );
         cache.rename(
-            state.underlying_path.as_ref().unwrap(), path.to_owned(), state.attr.kind);
+            state.underlying_path.as_ref().unwrap(),
+            path.to_owned(),
+            state.attr.kind,
+        );
         state.underlying_path = Some(PathBuf::from(path));
 
         // This is racy: if other file operations are going on inside this subtree, they will fail
@@ -507,21 +566,31 @@ impl Node for Dir {
             Some(dirent) => {
                 ensure!(dirent.explicit_mapping, "Not a mapping");
                 Ok(dirent.node.clone())
-            },
+            }
             None => {
                 let child = self.new_scaffold_child(None, name, ids, time::get_time());
-                let dirent = Dirent { node: child.clone(), explicit_mapping: true };
+                let dirent = Dirent {
+                    node: child.clone(),
+                    explicit_mapping: true,
+                };
                 state.children.insert(name.to_os_string(), dirent);
                 Ok(child)
-            },
+            }
         }
     }
 
-    fn map(&self, components: &[Component], underlying_path: &Path, writable: bool,
-        ids: &IdGenerator, cache: &dyn Cache) -> Fallible<ArcNode> {
+    fn map(
+        &self,
+        components: &[Component],
+        underlying_path: &Path,
+        writable: bool,
+        ids: &IdGenerator,
+        cache: &dyn Cache,
+    ) -> Fallible<ArcNode> {
         debug_assert!(
             !components.is_empty(),
-            "Must not be reached because we don't have the containing ArcNode to return it");
+            "Must not be reached because we don't have the containing ArcNode to return it"
+        );
         let (name, remainder) = split_components(components);
 
         let mut state = self.state.lock().unwrap();
@@ -529,9 +598,14 @@ impl Node for Dir {
         if let Some(dirent) = state.children.get(name) {
             // TODO(jmmv): We should probably mark this dirent as an explicit mapping if it already
             // wasn't, but the Go variant of this code doesn't do this -- so investigate later.
-            ensure!(dirent.node.file_type_cached() == fuse::FileType::Directory
-                && !remainder.is_empty(), "Already mapped");
-            return dirent.node.map(remainder, underlying_path, writable, ids, cache);
+            ensure!(
+                dirent.node.file_type_cached() == fuse::FileType::Directory
+                    && !remainder.is_empty(),
+                "Already mapped"
+            );
+            return dirent
+                .node
+                .map(remainder, underlying_path, writable, ids, cache);
         }
 
         let child = if remainder.is_empty() {
@@ -542,13 +616,19 @@ impl Node for Dir {
             self.new_scaffold_child(state.underlying_path.as_ref(), name, ids, time::get_time())
         };
 
-        let dirent = Dirent { node: child.clone(), explicit_mapping: true };
+        let dirent = Dirent {
+            node: child.clone(),
+            explicit_mapping: true,
+        };
         state.children.insert(name.to_os_string(), dirent);
 
         if remainder.is_empty() {
             Ok(child)
         } else {
-            ensure!(child.file_type_cached() == fuse::FileType::Directory, "Already mapped");
+            ensure!(
+                child.file_type_cached() == fuse::FileType::Directory,
+                "Already mapped"
+            );
             child.map(remainder, underlying_path, writable, ids, cache)
         }
     }
@@ -575,14 +655,22 @@ impl Node for Dir {
                     state.children.insert(name, dirent);
                     Err(err)
                 }
-            },
+            }
             None => Err(format_err!("Unknown entry")),
         }
     }
 
     #[allow(clippy::type_complexity)]
-    fn create(&self, name: &OsStr, uid: unistd::Uid, gid: unistd::Gid, mode: u32, flags: u32,
-        ids: &IdGenerator, cache: &dyn Cache) -> NodeResult<(ArcNode, ArcHandle, fuse::FileAttr)> {
+    fn create(
+        &self,
+        name: &OsStr,
+        uid: unistd::Uid,
+        gid: unistd::Gid,
+        mode: u32,
+        flags: u32,
+        ids: &IdGenerator,
+        cache: &dyn Cache,
+    ) -> NodeResult<(ArcNode, ArcHandle, fuse::FileAttr)> {
         let mut state = self.state.lock().unwrap();
         let path = Dir::get_writable_path(&mut state, name)?;
 
@@ -590,9 +678,22 @@ impl Node for Dir {
         options.create(true);
         options.mode(mode);
 
-        let file = create_as(&path, uid, gid, |p| options.open(&p), |p| fs::remove_file(&p))?;
-        let (node, attr) = Dir::post_create_lookup(self.writable, &mut state, &path, name,
-            fuse::FileType::RegularFile, ids, cache)?;
+        let file = create_as(
+            &path,
+            uid,
+            gid,
+            |p| options.open(&p),
+            |p| fs::remove_file(&p),
+        )?;
+        let (node, attr) = Dir::post_create_lookup(
+            self.writable,
+            &mut state,
+            &path,
+            name,
+            fuse::FileType::RegularFile,
+            ids,
+            cache,
+        )?;
         Ok((node.clone(), node.handle_from(file), attr))
     }
 
@@ -617,32 +718,65 @@ impl Node for Dir {
         }
     }
 
-    fn lookup(&self, name: &OsStr, ids: &IdGenerator, cache: &dyn Cache)
-        -> NodeResult<(ArcNode, fuse::FileAttr)> {
+    fn lookup(
+        &self,
+        name: &OsStr,
+        ids: &IdGenerator,
+        cache: &dyn Cache,
+    ) -> NodeResult<(ArcNode, fuse::FileAttr)> {
         let mut state = self.state.lock().unwrap();
         Dir::lookup_locked(self.writable, &mut state, name, ids, cache)
     }
 
-    fn mkdir(&self, name: &OsStr, uid: unistd::Uid, gid: unistd::Gid, mode: u32, ids: &IdGenerator,
-        cache: &dyn Cache) -> NodeResult<(ArcNode, fuse::FileAttr)> {
+    fn mkdir(
+        &self,
+        name: &OsStr,
+        uid: unistd::Uid,
+        gid: unistd::Gid,
+        mode: u32,
+        ids: &IdGenerator,
+        cache: &dyn Cache,
+    ) -> NodeResult<(ArcNode, fuse::FileAttr)> {
         let mut state = self.state.lock().unwrap();
         let path = Dir::get_writable_path(&mut state, name)?;
 
         create_as(
-            &path, uid, gid,
+            &path,
+            uid,
+            gid,
             |p| fs::DirBuilder::new().mode(mode).create(&p),
-            |p| fs::remove_dir(&p))?;
-        Dir::post_create_lookup(self.writable, &mut state, &path, name,
-            fuse::FileType::Directory, ids, cache)
+            |p| fs::remove_dir(&p),
+        )?;
+        Dir::post_create_lookup(
+            self.writable,
+            &mut state,
+            &path,
+            name,
+            fuse::FileType::Directory,
+            ids,
+            cache,
+        )
     }
 
-    fn mknod(&self, name: &OsStr, uid: unistd::Uid, gid: unistd::Gid, mode: u32, rdev: u32,
-        ids: &IdGenerator, cache: &dyn Cache) -> NodeResult<(ArcNode, fuse::FileAttr)> {
+    fn mknod(
+        &self,
+        name: &OsStr,
+        uid: unistd::Uid,
+        gid: unistd::Gid,
+        mode: u32,
+        rdev: u32,
+        ids: &IdGenerator,
+        cache: &dyn Cache,
+    ) -> NodeResult<(ArcNode, fuse::FileAttr)> {
         let mut state = self.state.lock().unwrap();
         let path = Dir::get_writable_path(&mut state, name)?;
 
         if mode > u32::from(std::u16::MAX) {
-            warn!("mknod got too-big mode {} (exceeds {})", mode, std::u16::MAX);
+            warn!(
+                "mknod got too-big mode {} (exceeds {})",
+                mode,
+                std::u16::MAX
+            );
         }
         let mode = mode as sys::stat::mode_t;
 
@@ -655,7 +789,10 @@ impl Node for Dir {
 
             let truncated_mode = sflag.bits() | perm.bits();
             if truncated_mode != mode {
-                warn!("mknod cannot only handle {} from mode {}", truncated_mode, mode);
+                warn!(
+                    "mknod cannot only handle {} from mode {}",
+                    truncated_mode, mode
+                );
             }
 
             (sflag, perm)
@@ -667,18 +804,32 @@ impl Node for Dir {
             sys::stat::SFlag::S_IFIFO => fuse::FileType::NamedPipe,
             sys::stat::SFlag::S_IFREG => fuse::FileType::RegularFile,
             _ => {
-                warn!("mknod received request to create {} with type {:?}, which is not supported",
-                    path.display(), sflag);
+                warn!(
+                    "mknod received request to create {} with type {:?}, which is not supported",
+                    path.display(),
+                    sflag
+                );
                 return Err(KernelError::from_errno(errno::Errno::EIO));
-            },
+            }
         };
 
         #[allow(clippy::cast_lossless)]
         create_as(
-            &path, uid, gid,
+            &path,
+            uid,
+            gid,
             |p| sys::stat::mknod(p, sflag, perm, rdev as sys::stat::dev_t),
-            |p| unistd::unlink(p))?;
-        Dir::post_create_lookup(self.writable, &mut state, &path, name, exp_filetype, ids, cache)
+            |p| unistd::unlink(p),
+        )?;
+        Dir::post_create_lookup(
+            self.writable,
+            &mut state,
+            &path,
+            name,
+            exp_filetype,
+            ids,
+            cache,
+        )
     }
 
     fn open(&self, flags: u32) -> NodeResult<ArcHandle> {
@@ -699,7 +850,7 @@ impl Node for Dir {
             writable: self.writable,
             state: self.state.clone(),
             handle: Mutex::from(handle),
-            reply_contents: Mutex::from(vec!()),
+            reply_contents: Mutex::from(vec![]),
         }))
     }
 
@@ -719,23 +870,34 @@ impl Node for Dir {
 
         fs::rename(&old_path, &new_path)?;
 
-        let dirent = state.children.remove(old_name)
+        let dirent = state
+            .children
+            .remove(old_name)
             .expect("get_writable_path call above ensured the child exists");
         dirent.node.set_underlying_path(&new_path, cache);
         state.children.insert(new_name.to_owned(), dirent);
         Ok(())
     }
 
-    fn rename_and_move_source(&self, old_name: &OsStr, new_dir: ArcNode, new_name: &OsStr,
-        cache: &dyn Cache) -> NodeResult<()> {
-        debug_assert!(self.inode != new_dir.as_ref().inode(),
-            "Same-directory renames have to be done via `rename`");
+    fn rename_and_move_source(
+        &self,
+        old_name: &OsStr,
+        new_dir: ArcNode,
+        new_name: &OsStr,
+        cache: &dyn Cache,
+    ) -> NodeResult<()> {
+        debug_assert!(
+            self.inode != new_dir.as_ref().inode(),
+            "Same-directory renames have to be done via `rename`"
+        );
 
         let mut state = self.state.lock().unwrap();
 
         let old_path = Dir::get_writable_path(&mut state, old_name)?;
 
-        let (old_name, dirent) = state.children.remove_entry(old_name)
+        let (old_name, dirent) = state
+            .children
+            .remove_entry(old_name)
             .expect("get_writable_path call above ensured the child exists");
         let result = new_dir.rename_and_move_target(&dirent, &old_path, new_name, cache);
         if result.is_err() {
@@ -746,8 +908,13 @@ impl Node for Dir {
         result
     }
 
-    fn rename_and_move_target(&self, dirent: &Dirent, old_path: &Path, new_name: &OsStr,
-        cache: &dyn Cache) -> NodeResult<()> {
+    fn rename_and_move_target(
+        &self,
+        dirent: &Dirent,
+        old_path: &Path,
+        new_name: &OsStr,
+        cache: &dyn Cache,
+    ) -> NodeResult<()> {
         // We are locking the target node while the source node is already locked, so this can
         // deadlock.  The previous Go implementation of this code ordered the locks based on inode
         // numbers so we should do the same thing here, but then this two-phase move implementation
@@ -791,14 +958,34 @@ impl Node for Dir {
         }
     }
 
-    fn symlink(&self, name: &OsStr, link: &Path, uid: unistd::Uid, gid: unistd::Gid,
-        ids: &IdGenerator, cache: &dyn Cache) -> NodeResult<(ArcNode, fuse::FileAttr)> {
+    fn symlink(
+        &self,
+        name: &OsStr,
+        link: &Path,
+        uid: unistd::Uid,
+        gid: unistd::Gid,
+        ids: &IdGenerator,
+        cache: &dyn Cache,
+    ) -> NodeResult<(ArcNode, fuse::FileAttr)> {
         let mut state = self.state.lock().unwrap();
         let path = Dir::get_writable_path(&mut state, name)?;
 
-        create_as(&path, uid, gid, |p| unix_fs::symlink(link, &p), |p| fs::remove_file(&p))?;
-        Dir::post_create_lookup(self.writable, &mut state, &path, name,
-            fuse::FileType::Symlink, ids, cache)
+        create_as(
+            &path,
+            uid,
+            gid,
+            |p| unix_fs::symlink(link, &p),
+            |p| fs::remove_file(&p),
+        )?;
+        Dir::post_create_lookup(
+            self.writable,
+            &mut state,
+            &path,
+            name,
+            fuse::FileType::Symlink,
+            ids,
+            cache,
+        )
     }
 
     fn unlink(&self, name: &OsStr, cache: &dyn Cache) -> NodeResult<()> {

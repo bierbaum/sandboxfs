@@ -26,13 +26,20 @@ use std::env;
 /// failing to build.
 #[allow(unused)]
 fn find_library(pc_name: &str, lib_name: &str, fallback: bool) {
-    match pkg_config::Config::new().atleast_version("2.0").probe(pc_name) {
+    match pkg_config::Config::new()
+        .atleast_version("2.0")
+        .probe(pc_name)
+    {
         Ok(_) => (),
-        Err(_) => if fallback { println!("cargo:rustc-link-lib={}", lib_name) },
+        Err(_) => {
+            if fallback {
+                println!("cargo:rustc-link-lib={}", lib_name)
+            }
+        }
     };
 }
 
-fn main () {
+fn main() {
     // We are running on Travis, which pins us to an old macOS version that does not have
     // utimensat.  Apply a workaround so we can test most of sandboxfs.
     // TODO(https://github.com/bazelbuild/sandboxfs/issues/46): Remove this hack.
@@ -42,7 +49,7 @@ fn main () {
             println!("cargo:rustc-cfg=have_utimensat=\"0\"");
             #[cfg(not(target_os = "macos"))]
             println!("cargo:rustc-cfg=have_utimensat=\"1\"");
-        },
+        }
         None => println!("cargo:rustc-cfg=have_utimensat=\"1\""),
     }
 
@@ -58,5 +65,6 @@ fn main () {
     // TODO(https://github.com/dignifiedquire/rust-gperftools/pull/1): Remove this in favor of
     // upstream doing the right thing when this PR is accepted and switch to rust-gperftools instead
     // (which has the added benefit of providing heap profiling).
-    #[cfg(feature = "profiling")] find_library("libprofiler", "profiler", true);
+    #[cfg(feature = "profiling")]
+    find_library("libprofiler", "profiler", true);
 }

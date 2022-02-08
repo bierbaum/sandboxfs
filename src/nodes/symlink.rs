@@ -16,7 +16,7 @@ extern crate fuse;
 
 use failure::Fallible;
 use nix::errno;
-use nodes::{ArcNode, AttrDelta, Cache, KernelError, Node, NodeResult, conv, setattr};
+use nodes::{conv, setattr, ArcNode, AttrDelta, Cache, KernelError, Node, NodeResult};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -45,8 +45,12 @@ impl Symlink {
     /// `fs_attr` is an input parameter because, by the time we decide to instantiate a symlink
     /// node (e.g. as we discover directory entries during readdir or lookup), we have already
     /// issued a stat on the underlying file system and we cannot re-do it for efficiency reasons.
-    pub fn new_mapped(inode: u64, underlying_path: &Path, fs_attr: &fs::Metadata, writable: bool)
-        -> ArcNode {
+    pub fn new_mapped(
+        inode: u64,
+        underlying_path: &Path,
+        fs_attr: &fs::Metadata,
+        writable: bool,
+    ) -> ArcNode {
         if !fs_attr.file_type().is_symlink() {
             panic!("Can only construct based on symlinks");
         }
@@ -57,7 +61,11 @@ impl Symlink {
             attr: attr,
         };
 
-        Arc::new(Symlink { inode, writable, state: Mutex::from(state) })
+        Arc::new(Symlink {
+            inode,
+            writable,
+            state: Mutex::from(state),
+        })
     }
 
     /// Same as `getattr` but with the node already locked.
@@ -65,8 +73,11 @@ impl Symlink {
         if let Some(path) = &state.underlying_path {
             let fs_attr = fs::symlink_metadata(path)?;
             if !fs_attr.file_type().is_symlink() {
-                warn!("Path {} backing a symlink node is no longer a symlink; got {:?}",
-                    path.display(), fs_attr.file_type());
+                warn!(
+                    "Path {} backing a symlink node is no longer a symlink; got {:?}",
+                    path.display(),
+                    fs_attr.file_type()
+                );
                 return Err(KernelError::from_errno(errno::Errno::EIO));
             }
             state.attr = conv::attr_fs_to_fuse(path, inode, state.attr.nlink, &fs_attr);
@@ -93,17 +104,23 @@ impl Node for Symlink {
         let mut state = self.state.lock().unwrap();
         assert!(
             state.underlying_path.is_some(),
-            "Delete already called or trying to delete an explicit mapping");
+            "Delete already called or trying to delete an explicit mapping"
+        );
         cache.delete(state.underlying_path.as_ref().unwrap(), state.attr.kind);
         state.underlying_path = None;
     }
 
     fn set_underlying_path(&self, path: &Path, cache: &dyn Cache) {
         let mut state = self.state.lock().unwrap();
-        debug_assert!(state.underlying_path.is_some(),
-            "Renames should not have been allowed in scaffold or deleted nodes");
+        debug_assert!(
+            state.underlying_path.is_some(),
+            "Renames should not have been allowed in scaffold or deleted nodes"
+        );
         cache.rename(
-            state.underlying_path.as_ref().unwrap(), path.to_owned(), state.attr.kind);
+            state.underlying_path.as_ref().unwrap(),
+            path.to_owned(),
+            state.attr.kind,
+        );
         state.underlying_path = Some(PathBuf::from(path));
         debug_assert!(state.attr.nlink >= 1);
         state.attr.nlink -= 1;
@@ -123,7 +140,8 @@ impl Node for Symlink {
         let state = self.state.lock().unwrap();
         assert!(
             state.underlying_path.is_some(),
-            "There is no known API to access the extended attributes of a symlink via an fd");
+            "There is no known API to access the extended attributes of a symlink via an fd"
+        );
         let value = xattr::get(state.underlying_path.as_ref().unwrap(), name)?;
         Ok(value)
     }
@@ -132,7 +150,8 @@ impl Node for Symlink {
         let state = self.state.lock().unwrap();
         assert!(
             state.underlying_path.is_some(),
-            "There is no known API to access the extended attributes of a symlink via an fd");
+            "There is no known API to access the extended attributes of a symlink via an fd"
+        );
         let xattrs = xattr::list(state.underlying_path.as_ref().unwrap())?;
         Ok(Some(xattrs))
     }
@@ -140,8 +159,10 @@ impl Node for Symlink {
     fn readlink(&self) -> NodeResult<PathBuf> {
         let state = self.state.lock().unwrap();
 
-        let path = state.underlying_path.as_ref().expect(
-            "There is no known API to get the target of a deleted symlink");
+        let path = state
+            .underlying_path
+            .as_ref()
+            .expect("There is no known API to get the target of a deleted symlink");
         Ok(fs::read_link(path)?)
     }
 
@@ -149,7 +170,8 @@ impl Node for Symlink {
         let state = self.state.lock().unwrap();
         assert!(
             state.underlying_path.is_some(),
-            "There is no known API to access the extended attributes of a symlink via an fd");
+            "There is no known API to access the extended attributes of a symlink via an fd"
+        );
         xattr::remove(state.underlying_path.as_ref().unwrap(), name)?;
         Ok(())
     }
@@ -164,7 +186,8 @@ impl Node for Symlink {
         let state = self.state.lock().unwrap();
         assert!(
             state.underlying_path.is_some(),
-            "There is no known API to access the extended attributes of a symlink via an fd");
+            "There is no known API to access the extended attributes of a symlink via an fd"
+        );
         xattr::set(state.underlying_path.as_ref().unwrap(), name, value)?;
         Ok(())
     }
